@@ -136,6 +136,8 @@ def load_and_preprocess_data(data_file_path, inclusion_file_path, age_boundaries
 
     ## Merge the two dataframes to apply inclusion criteria:
     df = pd.merge(df, inclusion_df[["ID"]], on="ID", how='inner')
+    df["BASIC_INFO_SEX"] = df["BASIC_INFO_SEX"].astype('int')
+    df["BASIC_INFO_AGE"] = df["BASIC_INFO_AGE"].astype('int')
 
     ## Divide the data into multiple subsets according to the given age ranges:
     if sep_sex == False:
@@ -149,7 +151,7 @@ def load_and_preprocess_data(data_file_path, inclusion_file_path, age_boundaries
             f"{age_group}_{sex}" for age_group, sex in list(product(age_bin_labels, ["M", "F"]))
         ]
         sub_df_list = [
-            df[df["BASIC_INFO_AGE"].between(lower_b, upper_b) & df["BASIC_INFO_SEX"] == sex] 
+            df[(df["BASIC_INFO_AGE"].between(lower_b, upper_b)) & (df["BASIC_INFO_SEX"] == sex)] 
             for (lower_b, upper_b), sex in list(product(age_boundaries, [1, 2]))
         ]
 
