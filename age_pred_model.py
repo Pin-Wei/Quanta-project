@@ -34,9 +34,11 @@ class Config:
     pad_method = ["wais_7_seg", "every_5_yrs"][0]
 
     out_folder = os.path.join("outputs", datetime.today().strftime('%Y-%m-%d_%H.%M.%S'))
+    description_outpath = os.path.join(out_folder, "description.json")
     model_outpath_template = os.path.join(out_folder, "models_groupname_modeltype.pkl")
     results_outpath_template = os.path.join(out_folder, "results_groupname_oriname.json")
-    description_outpath = os.path.join(out_folder, "description.json")
+    logging_outpath = os.path.join(out_folder, "log.txt")
+    failure_record_outpath = os.path.join(out_folder, "failure_record.txt")
 
 class Constants:
     age_groups = { # The age groups defined by different methods
@@ -429,19 +431,40 @@ def main():
     config = Config()
     constant = Constants()
 
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-        # https://zx7978123.medium.com/python-logging-%E6%97%A5%E8%AA%8C%E7%AE%A1%E7%90%86%E6%95%99%E5%AD%B8-60be0a1a6005
+    logging.basicConfig(
+        level=logging.INFO, 
+        format='%(asctime)s - %(levelname)s - %(message)s', 
+        filename=config.logging_outpath
+    ) # https://zx7978123.medium.com/python-logging-%E6%97%A5%E8%AA%8C%E7%AE%A1%E7%90%86%E6%95%99%E5%AD%B8-60be0a1a6005
+
+    if not os.path.exists(config.out_folder):
+        os.makedirs(config.out_folder)
+    
+    desc = {
+        "DataVersion": config.data_file_path, 
+        "InclusionVersion": config.inclusion_file_path, 
+        "SexSeparated": config.sep_sex, 
+        "AgeGroups": age_bin_labels, 
+        "CorrectionAgeGroups": pad_age_groups, 
+        "TestsetRatio": config.testset_ratio, 
+        "FeatureOrientations": constant.domain_approach_mapping.keys(),
+        "FeatureSelectionModel": config.feature_selection_model, 
+        "OptimizedModels": constant.model_names
+    }
+    desc = convert_np_types(desc)
+
+    with open(config.description_outpath, 'w', encoding='utf-8') as f:
+        json.dump(desc, f, ensure_ascii=False)
+
+    logging.info("The description of the current run has been saved as a JSON file.")
 
     age_bin_labels = list(constant.age_groups[config.age_method].keys())
     age_boundaries = list(constant.age_groups[config.age_method].values()) 
     pad_age_groups = list(constant.age_groups[config.pad_method].keys())
     pad_age_breaks = [ x for x, _ in list(constant.age_groups[config.pad_method].values()) ] + [ np.inf ]
     
-    if not os.path.exists(config.out_folder):
-        os.makedirs(config.out_folder)
-    
     record_if_failed = []
-    
+
 ## Load data, split into groups, and preprocess -----------------------------------
 
     preprocessed_grouped_datasets = load_and_preprocess_data(
@@ -593,25 +616,11 @@ def main():
                             pickle.dump(best_model, f)
 
                         logging.info(f"The trained model have been saved for group '{group_name}' and orientation '{ori_name}'.")
-
-## Finalization ------------------------------------------------------------------
-
-    desc = {
-        "DataVersion": config.data_file_path, 
-        "InclusionVersion": config.inclusion_file_path, 
-        "SexSeparated": config.sep_sex, 
-        "AgeGroups": age_bin_labels, 
-        "CorrectionAgeGroups": pad_age_groups, 
-        "TestsetRatio": config.testset_ratio, 
-        "FeatureOrientations": constant.domain_approach_mapping.keys(),
-        "FeatureSelectionModel": config.feature_selection_model, 
-        "OptimizedModels": constant.model_names
-    }
-    desc = convert_np_types(desc)
-    with open(config.description_outpath, 'w', encoding='utf-8') as f:
-        json.dump(desc, f, ensure_ascii=False)
-
-    logging.info("The description of the current run has been saved as a JSON file.")
+    
+    with open(config.failure_record_outpath, 'w') as f:
+        f.write("\n".join(record_if_failed))
+    
+    logging.info("The record of failed processing have been saved.")
 
 if __name__ == "__main__":
     main()
