@@ -3,15 +3,17 @@
 import os
 # from sys import argv
 import argparse
+import logging
+import shutil
 import numpy as np
 import pandas as pd
-import logging
 from datetime import datetime
 from itertools import product
 import optuna
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.model_selection import KFold, train_test_split
+from sklearn.decomposition import PCA
 from sklearn.linear_model import LassoCV, ElasticNet
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.tree import DecisionTreeRegressor
@@ -24,18 +26,20 @@ import json
 ## Define the configuration and constants ========================================
 
 parser = argparse.ArgumentParser(description="")
-parser.add_argument("-a", "--age_method", type=int, required=True, 
+parser.add_argument("-ag", "--age_method", type=int, required=True, 
                     help="The method to define age groups. Options: 0 (cut_at_40), 1 (wais_7_seg).")
-parser.add_argument("-s", "--sep_sex", type=int, required=True, 
+parser.add_argument("-ss", "--sep_sex", type=int, required=True, 
                     help="Whether to separate the data by gender. Options: 0 (False), 1 (True).")
-parser.add_argument("-t", "--testset_ratio", type=float, default=0.0, 
+parser.add_argument("-tr", "--testset_ratio", type=float, default=0.0, 
                     help="The ratio of the test set.")
-parser.add_argument("-nf", "--n_features", type=int, default=20, 
-                    help="Number of features to select. (default: 20)")
-parser.add_argument("-fm", "--feature_selection_model", type=int, default=0, 
+parser.add_argument("-fs", "--feature_selection_model", type=int, default=0, 
                     help="The model to use for feature selection. Options: 0 (LassoCV), 1 (RF), 2 (XGBR).")
-parser.add_argument("-i", "--ignore", type=int, default=0, 
-                    help="Ignore the first N iterations.")
+parser.add_argument("-er", "--explained_ratio", type=float, default=0.9, 
+                    help="The variance to be explained by the selected features.")
+# parser.add_argument("-nf", "--n_features", type=int, default=20, 
+#                     help="Number of features to select. (default: 20)")
+parser.add_argument("-ig", "--ignore", type=int, default=0, 
+                    help="Ignore the first N iterations (In case you might be interrupted and don't want to start from the beginning)ㄡ")
 args = parser.parse_args()
 
 class Config:
@@ -45,7 +49,8 @@ class Config:
     age_method = ["cut_at_40", "wais_7_seg"][args.age_method]
     sep_sex = [True, False][args.sep_sex]    
     feature_selection_model = ["LassoCV", "RF", "XGBR"][args.feature_selection_model]
-    select_n_features = args.n_features
+    explained_ratio = args.explained_ratio
+    # select_n_features = args.n_features
     testset_ratio = args.testset_ratio
     pad_method = ["wais_7_seg", "every_5_yrs"][0]
 
@@ -195,18 +200,18 @@ def load_and_preprocess_data(data_file_path, inclusion_file_path, age_boundaries
 
     return preprocessed_grouped_datasets
 
-def feature_selection(X, y, model_name="LassoCV", n_features=20, nfold=5, seed=42):
+def feature_selection(X, y, model_name="LassoCV", explained_ratio=0.9, nfold=5, seed=42):
     '''
     Inputs:
     - X (pd.DataFrame): Feature matrix.
     - y (pd.Series)   : Target variable (i.e., age).
     - model_name (str): A key that specify the model to use for feature selection.
-    - n_features (int): Number of features to select.
+    - explained_ratio (float): The desired variance to be explained by the selected features.
 
     Return:
     - (list): Names of selected features.
     '''
-    logging.info(f"Selecting data features using {model_name} (max={n_features})...")
+    logging.info(f"Selecting data features using {model_name} (explained_ratio={explained_ratio}) ...")
 
     # Estimate model coefficients with cross-validation:
     if model_name == "LassoCV":
@@ -230,12 +235,17 @@ def feature_selection(X, y, model_name="LassoCV", n_features=20, nfold=5, seed=4
             zip(X.columns, sort_by), key=lambda x: x[1], reverse=True
         )
     ]
-    
-    # If the number of non-zero features is greater than "n_features", take the first "n_features":
-    if len(ranked_features) > n_features:
-            ranked_selected_features = ranked_features[-n_features:]
-    else:
-        ranked_selected_features = ranked_features
+
+    # Apply PCA to determine the number of features that explain the desired variance
+    pca = PCA()
+    pca.fit(X[ranked_features], y)
+    cumulative_variance = np.cumsum(pca.explained_variance_ratio_)
+
+    # Find the number of components that explain the desired variance
+    num_components = np.argmax(cumulative_variance >= explained_ratio) + 1
+
+    # Select the top features based on the number of components
+    ranked_selected_features = ranked_features[:num_components]
 
     return list(ranked_selected_features)
 
@@ -459,11 +469,13 @@ def main():
         filename=config.logging_outpath
     ) # https://zx7978123.medium.com/python-logging-%E6%97%A5%E8%AA%8C%E7%AE%A1%E7%90%86%E6%95%99%E5%AD%B8-60be0a1a6005
     
+    ## Define the labels and boundaries of age groups and age correction groups:
     age_bin_labels = list(constant.age_groups[config.age_method].keys())
     age_boundaries = list(constant.age_groups[config.age_method].values()) 
     pad_age_groups = list(constant.age_groups[config.pad_method].keys())
     pad_age_breaks = [ x for x, _ in list(constant.age_groups[config.pad_method].values()) ] + [ np.inf ]
-    
+
+    ## Save the description of the current execution as a JSON file:
     desc = {
         "DataVersion": config.data_file_path, 
         "InclusionVersion": config.inclusion_file_path, 
@@ -481,10 +493,19 @@ def main():
     with open(config.description_outpath, 'w', encoding='utf-8') as f:
         json.dump(desc, f, ensure_ascii=False)
 
-    logging.info("The description of the current run has been saved as a JSON file.")
+    logging.info("The description of the current execution has been saved as a JSON file.")
 
+    ## Copy the current Python script to the output folder:
+    shutil.copyfile(
+        src=os.path.abspath(__file__), 
+        dst=os.path.join(config.out_folder, os.path.basename(__file__))
+    )
+
+    logging.info("The current Python script has been copied to the output folder.")
+
+    ## Record the failed processing:
     record_if_failed = []
-
+    
 ## Load data, split into groups, and preprocess -----------------------------------
 
     preprocessed_grouped_datasets = load_and_preprocess_data(
@@ -543,7 +564,8 @@ def main():
                                 X=group_data["X_train"].loc[:, included_features], 
                                 y=group_data["y_train"], 
                                 model_name=config.feature_selection_model, 
-                                n_features=config.select_n_features
+                                explained_ratio=config.explained_ratio
+                                # n_features=config.select_n_features
                             )
 
 ## Find the best model and save its parameters -----------------------------------
