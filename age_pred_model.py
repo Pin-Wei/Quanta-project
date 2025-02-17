@@ -47,7 +47,7 @@ class Config:
     inclusion_file_path = os.path.join("rawdata", "InclusionList_ses-01.csv")
 
     age_method = ["cut_at_40", "wais_7_seg"][args.age_method]
-    sep_sex = [True, False][args.sep_sex]    
+    sep_sex = [False, True][args.sep_sex]
     feature_selection_model = ["LassoCV", "RF", "XGBR"][args.feature_selection_model]
     explained_ratio = args.explained_ratio
     # select_n_features = args.n_features
@@ -486,6 +486,7 @@ def main():
         "TestsetRatio": config.testset_ratio, 
         "FeatureOrientations": list(constant.domain_approach_mapping.keys()),
         "FeatureSelectionModel": config.feature_selection_model, 
+        "FeatureExplainedRatio": config.explained_ratio,
         "OptimizedModels": constant.model_names
     }
     desc = convert_np_types(desc)
