@@ -1,7 +1,6 @@
 #!/usr/bin/python
 
 import os
-# from sys import argv
 import argparse
 import logging
 import shutil
@@ -36,10 +35,10 @@ parser.add_argument("-fs", "--feature_selection_model", type=int, default=0,
                     help="The model to use for feature selection. Options: 0 (LassoCV), 1 (RF), 2 (XGBR).")
 parser.add_argument("-er", "--explained_ratio", type=float, default=0.9, 
                     help="The variance to be explained by the selected features.")
-# parser.add_argument("-nf", "--n_features", type=int, default=20, 
-#                     help="Number of features to select. (default: 20)")
 parser.add_argument("-ig", "--ignore", type=int, default=0, 
                     help="Ignore the first N iterations (In case you might be interrupted and don't want to start from the beginning)ㄡ")
+parser.add_argument("-pmf", "--pretrained_model_folder", type=str, default=None, 
+                    help="Folder containing the pre-trained model files (.pkl).")
 args = parser.parse_args()
 
 class Config:
@@ -50,7 +49,6 @@ class Config:
     sep_sex = [False, True][args.sep_sex]
     feature_selection_model = ["LassoCV", "RF", "XGBR"][args.feature_selection_model]
     explained_ratio = args.explained_ratio
-    # select_n_features = args.n_features
     testset_ratio = args.testset_ratio
     pad_method = ["wais_7_seg", "every_5_yrs"][0]
 
@@ -486,8 +484,9 @@ def main():
         "TestsetRatio": config.testset_ratio, 
         "FeatureOrientations": list(constant.domain_approach_mapping.keys()),
         "FeatureSelectionModel": config.feature_selection_model, 
-        "FeatureExplainedRatio": config.explained_ratio,
-        "OptimizedModels": constant.model_names
+        "FeatureExplainedRatio": config.explained_ratio, 
+        "OptimizedModels": constant.model_names, 
+        "UsedPretrainedModels": args.pretrained_model_folder
     }
     desc = convert_np_types(desc)
 
@@ -504,10 +503,10 @@ def main():
 
     logging.info("The current Python script has been copied to the output folder.")
 
-    ## Record the failed processing:
-    record_if_failed = []
+    ## Record the failed processing to a text file:
+    record_if_failed = [] 
     
-## Load data, split into groups, and preprocess -----------------------------------
+## STEP-1. Load data, split into groups, and preprocess -------------------------------------------------------
 
     preprocessed_grouped_datasets = load_and_preprocess_data(
         data_file_path=config.data_file_path, 
@@ -518,164 +517,194 @@ def main():
         testset_ratio=config.testset_ratio
     )
 
-## Feature selection -------------------------------------------------------------
+## STEP-2. Feature selection -----------------------------------------------------------------------------------
 
-    iter = 0
+    iter = 0 # iteration counter for skipping
 
     for group_name, group_data in preprocessed_grouped_datasets.items():
 
-        if group_data is None:
+        if group_data is None: 
             logging.warning(f"Unable to process data for group '{group_name}'.")
             record_if_failed.append(f"Entire {group_name}.")
             continue
-        else:
-            ## Filter the features based on the domain and approach:
+
+        else: 
             for ori_name, ori_content in constant.domain_approach_mapping.items():
 
-## If the number of iterations is less than the specified value, skip the current iteration
-
-                if iter < args.ignore:
+                ### Skip the current iteration
+                if iter < args.ignore: 
                     logging.info(f"Skipping iteration: group='{group_name}', type='{ori_name}'")
                     iter += 1
-                    
-                else:
-                    logging.info(f"Processing group: {group_name}, type: {ori_name}")
-                    iter += 1
 
-                    included_features = [
-                        col for col in group_data["X_train"].columns
-                        if any( domain in col for domain in ori_content["domains"] )
-                        and any( app in col for app in ori_content["approaches"] )
-                        and "RESTING" not in col
-                    ]
+                ### Continue the current iteration
+                else: 
 
-                    if ori_name == "FUNCTIONAL": # exclude "STRUCTURE" features
-                        included_features = [ col for col in included_features if "STRUCTURE" not in col ]
-                    
-                    if len(included_features) == 0: # check if the collection is empty
-                        logging.warning(f"There are no available features for orientation '{ori_name}' in group '{group_name}'.")
-                        record_if_failed.append(f"{ori_name} of {group_name}.")
-                        continue
-                    else: 
-                        if ori_name == "BEH": # if the orientation is "BEH", use all features
-                            selected_features = included_features
+                    #### Train models from scratch:
+                    if args.pretrained_model_folder is None: 
+                        logging.info(f"Processing group: {group_name}, type: {ori_name}")
+                        iter += 1
 
-                        else: # otherwise, select features using the specified model
-                            selected_features = feature_selection(
-                                X=group_data["X_train"].loc[:, included_features], 
-                                y=group_data["y_train"], 
-                                model_name=config.feature_selection_model, 
-                                explained_ratio=config.explained_ratio
-                                # n_features=config.select_n_features
-                            )
+                        included_features = [ # filter the features based on the domain and approach
+                            col for col in group_data["X_train"].columns
+                            if any( domain in col for domain in ori_content["domains"] )
+                            and any( app in col for app in ori_content["approaches"] )
+                            and "RESTING" not in col
+                        ]
 
-## Find the best model and save its parameters -----------------------------------
-
-                        X_train_selected = group_data["X_train"].loc[:, selected_features]
-
-                        if X_train_selected.empty: 
-                            logging.warning(f"After feature selection, there are no available features for orientation '{ori_name}' in group '{group_name}'.")
-                            record_if_failed.append(f"{ori_name} of {group_name} after feature selection.")
+                        if ori_name == "FUNCTIONAL": # exclude "STRUCTURE" features
+                            included_features = [ col for col in included_features if "STRUCTURE" not in col ]
+                        
+                        if len(included_features) == 0: 
+                            logging.warning(f"There are no available features for orientation '{ori_name}' in group '{group_name}'.")
+                            record_if_failed.append(f"{ori_name} of {group_name}.")
                             continue
-                        else:                    
-                            results = train_and_evaluate(
-                                X=X_train_selected, 
-                                y=group_data["y_train"], 
-                                model_names=constant.model_names
-                            ) # Including ...
-                                # the mean and standard deviation of MAE scores, ...
-                                # the best model, and the best hyperparameters.
 
-                            best_model_name = min(results, key=lambda x: results[x]["mae_mean"])
-                            best_model = results[best_model_name]["best_model"]
+                        else: 
+                            if ori_name == "BEH": # if the orientation is "BEH", use all features
+                                selected_features = included_features
 
-## Generate age-correction reference table ----------------------------------------
-
-                            y_pred_train = best_model.predict(X_train_selected)
-                            pad_train = y_pred_train - group_data["y_train"]
-                            
-                            correction_ref = generate_correction_ref(
-                                age=group_data["y_train"], 
-                                pad=pad_train, 
-                                age_groups=pad_age_groups, 
-                                age_breaks=pad_age_breaks
-                            )
-
-## Apply the model, apply age-correction, and save the results --------------------
-                            
-                            if group_data["X_test"].empty: # apply the model to the training set
-                                corrected_y_pred_train = apply_age_correction(
-                                    predictions=y_pred_train, 
-                                    true_ages=group_data["y_train"], 
-                                    correction_ref=correction_ref, 
-                                    age_groups=pad_age_groups, 
-                                    age_breaks=pad_age_breaks
+                            else: # otherwise, select features using the specified model
+                                selected_features = feature_selection(
+                                    X=group_data["X_train"].loc[:, included_features], 
+                                    y=group_data["y_train"], 
+                                    model_name=config.feature_selection_model, 
+                                    explained_ratio=config.explained_ratio
                                 )
-                                corrected_y_pred_train = pd.Series(corrected_y_pred_train, index=group_data["y_train"].index)
-                                padac_train = corrected_y_pred_train - group_data["y_train"]
 
-                                save_results = {
-                                    "Model": best_model_name, 
-                                    "MeanTrainMAE": results[best_model_name]["mae_mean"], 
-                                    "NumberOfSubjs": len(group_data["id_train"]), 
-                                    "Note": "Train and test sets are the same.", 
-                                    "Age": list(group_data["y_train"]), 
-                                    "PredictedAge": list(y_pred_train), 
-                                    "PredictedAgeDifference": list(pad_train), 
-                                    "CorrectedPAD": list(padac_train), 
-                                    "CorrectedPredictedAge": list(corrected_y_pred_train), 
-                                    "AgeCorrectionTable": correction_ref.to_dict(orient='records'), 
-                                    "NumberOfFeatures": len(selected_features), 
-                                    "FeatureNames": selected_features, 
-                                }
-                            else:
-                                X_test_selected = group_data["X_test"].loc[:, selected_features]                       
-                                y_pred_test = best_model.predict(X_test_selected)
-                                y_pred_test = pd.Series(y_pred_test, index=group_data["y_test"].index)
-                                pad = y_pred_test - group_data["y_test"]
-                                corrected_y_pred_test = apply_age_correction(
-                                    predictions=y_pred_test, 
-                                    true_ages=group_data["y_test"], 
-                                    correction_ref=correction_ref, 
-                                    age_groups=pad_age_groups, 
-                                    age_breaks=pad_age_breaks
+## STEP-3. Find the best model and save its parameters -------------------------------------------------------
+
+                            X_train_selected = group_data["X_train"].loc[:, selected_features]
+
+                            if X_train_selected.empty: 
+                                logging.warning(f"After feature selection, there are no available features for orientation '{ori_name}' in group '{group_name}'.")
+                                record_if_failed.append(f"{ori_name} of {group_name} after feature selection.")
+                                continue
+
+                            else:                    
+                                results = train_and_evaluate(
+                                    X=X_train_selected, 
+                                    y=group_data["y_train"], 
+                                    model_names=constant.model_names
+                                ) # Including ...
+                                    # the mean and standard deviation of MAE scores, ...
+                                    # the best model, and the best hyperparameters.
+
+                                best_model_name = min(results, key=lambda x: results[x]["mae_mean"])
+                                best_model = results[best_model_name]["best_model"]
+                                mean_train_mae = results[best_model_name]["mae_mean"]
+
+                                model_outpath = (
+                                    config.model_outpath_template
+                                    .replace("groupname", group_name)
+                                    .replace("oriname", ori_name)
+                                    .replace("modeltype", best_model_name)
                                 )
-                                corrected_y_pred_test = pd.Series(corrected_y_pred_test, index=group_data["y_test"].index)
-                                padac = corrected_y_pred_test - group_data["y_test"]
+                                with open(model_outpath, 'wb') as f:
+                                    pickle.dump(best_model, f)
 
-                                save_results = {
-                                    "Model": best_model_name, 
-                                    "MeanTrainMAE": results[best_model_name]["mae_mean"], 
-                                    "NumberOfTraining": len(group_data["id_train"]), 
-                                    "NumberOfTesting": len(group_data["id_test"]), 
-                                    "Age": list(group_data["y_test"]), 
-                                    "PredictedAge": list(y_pred_test), 
-                                    "PredictedAgeDifference": list(pad), 
-                                    "CorrectedPAD": list(padac), 
-                                    "CorrectedPredictedAge": list(corrected_y_pred_test), 
-                                    "AgeCorrectionTable": correction_ref.to_dict(orient='records'), 
-                                    "NumberOfFeatures": len(selected_features), 
-                                    "FeatureNames": selected_features, 
-                                }
+                                logging.info(f"The trained model have been saved for group '{group_name}' and orientation '{ori_name}'.")
 
-                            save_results = convert_np_types(save_results)
-                            fp1 = (config.results_outpath_template
-                                .replace("groupname", group_name)
-                                .replace("oriname", ori_name))
-                            with open(fp1, 'w', encoding='utf-8') as f:
-                                json.dump(save_results, f, ensure_ascii=False)
+                    #### Use the pre-trained model:
+                    else: 
+                        logging.info(f"Using pre-trained models for group '{group_name}' and orientation '{ori_name}'.")
+                        previous_path = os.path.join("outputs", args.pretrained_model_folder)
+                        
+                        saved_json = f"results_{group_name}_{ori_name}.json"
+                        with open(os.path.join(previous_path, saved_json), 'r', encoding='utf-8') as f:
+                            saved_results = json.load(f)
+                            best_model_name = saved_results["Model"]
+                            selected_features = saved_results["FeatureNames"]
+                            mean_train_mae = saved_results["MeanTrainMAE"]
 
-                            logging.info(f"Model prediction have been saved as JSON files for group '{group_name}' and orientation '{ori_name}'.")
+                        saved_model = f"models_{group_name}_{ori_name}_{best_model_name}.pkl"
+                        with open(os.path.join(previous_path, saved_model), 'rb') as f:
+                            best_model = pickle.load(f)
+                        
+                        X_train_selected = group_data["X_train"].loc[:, selected_features]
+                        
+## STEP-4. Generate age-correction reference table -----------------------------------------------------------
 
-                            fp2 = (config.model_outpath_template
-                                .replace("groupname", group_name)
-                                .replace("oriname", ori_name)
-                                .replace("modeltype", best_model_name))
-                            with open(fp2, 'wb') as f:
-                                pickle.dump(best_model, f)
+                    y_pred_train = best_model.predict(X_train_selected)
+                    pad_train = y_pred_train - group_data["y_train"]
+                            
+                    correction_ref = generate_correction_ref(
+                        age=group_data["y_train"], 
+                        pad=pad_train, 
+                        age_groups=pad_age_groups, 
+                        age_breaks=pad_age_breaks
+                    )
 
-                            logging.info(f"The trained model have been saved for group '{group_name}' and orientation '{ori_name}'.")
-                                
+## STEP-5. Apply the model, apply age-correction, and save the results ----------------------------------------
+                            
+                    if group_data["X_test"].empty: # apply the model to the training set
+                        corrected_y_pred_train = apply_age_correction(
+                            predictions=y_pred_train, 
+                            true_ages=group_data["y_train"], 
+                            correction_ref=correction_ref, 
+                            age_groups=pad_age_groups, 
+                            age_breaks=pad_age_breaks
+                        )
+                        corrected_y_pred_train = pd.Series(corrected_y_pred_train, index=group_data["y_train"].index)
+                        padac_train = corrected_y_pred_train - group_data["y_train"]
+
+                        save_results = {
+                            "Model": best_model_name, 
+                            "MeanTrainMAE": mean_train_mae, 
+                            "NumberOfSubjs": len(group_data["id_train"]), 
+                            "SubjID": list(group_data["id_train"]), 
+                            "Note": "Train and test sets are the same.", 
+                            "Age": list(group_data["y_train"]), 
+                            "PredictedAge": list(y_pred_train), 
+                            "PredictedAgeDifference": list(pad_train), 
+                            "CorrectedPAD": list(padac_train), 
+                            "CorrectedPredictedAge": list(corrected_y_pred_train), 
+                            "AgeCorrectionTable": correction_ref.to_dict(orient='records'), 
+                            "NumberOfFeatures": len(selected_features), 
+                            "FeatureNames": selected_features, 
+                        }
+                    else:
+                        X_test_selected = group_data["X_test"].loc[:, selected_features]                       
+                        y_pred_test = best_model.predict(X_test_selected)
+                        y_pred_test = pd.Series(y_pred_test, index=group_data["y_test"].index)
+                        pad = y_pred_test - group_data["y_test"]
+                        corrected_y_pred_test = apply_age_correction(
+                            predictions=y_pred_test, 
+                            true_ages=group_data["y_test"], 
+                            correction_ref=correction_ref, 
+                            age_groups=pad_age_groups, 
+                            age_breaks=pad_age_breaks
+                        )
+                        corrected_y_pred_test = pd.Series(corrected_y_pred_test, index=group_data["y_test"].index)
+                        padac = corrected_y_pred_test - group_data["y_test"]
+
+                        save_results = {
+                            "Model": best_model_name, 
+                            "MeanTrainMAE": mean_train_mae, 
+                            "NumberOfTraining": len(group_data["id_train"]), 
+                            "TrainingSubjID": list(group_data["id_train"]), 
+                            "NumberOfTesting": len(group_data["id_test"]), 
+                            "TestingSubjID": list(group_data["id_test"]), 
+                            "Age": list(group_data["y_test"]), 
+                            "PredictedAge": list(y_pred_test), 
+                            "PredictedAgeDifference": list(pad), 
+                            "CorrectedPAD": list(padac), 
+                            "CorrectedPredictedAge": list(corrected_y_pred_test), 
+                            "AgeCorrectionTable": correction_ref.to_dict(orient='records'), 
+                            "NumberOfFeatures": len(selected_features), 
+                            "FeatureNames": selected_features, 
+                        }
+
+                    save_results = convert_np_types(save_results)
+                    fp1 = (config.results_outpath_template
+                        .replace("groupname", group_name)
+                        .replace("oriname", ori_name))
+                    with open(fp1, 'w', encoding='utf-8') as f:
+                        json.dump(save_results, f, ensure_ascii=False)
+
+                    logging.info(f"Model prediction have been saved as JSON files for group '{group_name}' and orientation '{ori_name}'.")
+
+                ### Next iteration
+
     with open(config.failure_record_outpath, 'w') as f:
         f.write("\n".join(record_if_failed))
     
