@@ -27,8 +27,8 @@ import json
 parser = argparse.ArgumentParser(description="")
 parser.add_argument("-ag", "--age_method", type=int, required=True, 
                     help="The method to define age groups. Options: 0 (cut_at_40), 1 (wais_7_seg).")
-parser.add_argument("-ss", "--sep_sex", type=int, required=True, 
-                    help="Whether to separate the data by gender. Options: 0 (False), 1 (True).")
+parser.add_argument("-ss", "--sep_sex", action="store_true", default=False, 
+                    help="Whether to separate the data by gender. (default: False).")
 parser.add_argument("-tr", "--testset_ratio", type=float, default=0.0, 
                     help="The ratio of the test set.")
 parser.add_argument("-fs", "--feature_selection_model", type=int, default=0, 
@@ -39,6 +39,8 @@ parser.add_argument("-ig", "--ignore", type=int, default=0,
                     help="Ignore the first N iterations (In case you might be interrupted and don't want to start from the beginning)ㄡ")
 parser.add_argument("-pmf", "--pretrained_model_folder", type=str, default=None, 
                     help="Folder containing the pre-trained model files (.pkl).")
+parser.add_argument("-wda", "--without_domain_approach", action="store_true", default=False, 
+                    help="Whether not to use domain approach for feature selection. (default: False).")
 args = parser.parse_args()
 
 class Config:
@@ -46,7 +48,7 @@ class Config:
     inclusion_file_path = os.path.join("rawdata", "InclusionList_ses-01.csv")
 
     age_method = ["cut_at_40", "wais_7_seg"][args.age_method]
-    sep_sex = [False, True][args.sep_sex]
+    sep_sex = args.sep_sex
     feature_selection_model = ["LassoCV", "RF", "XGBR"][args.feature_selection_model]
     explained_ratio = args.explained_ratio
     testset_ratio = args.testset_ratio
@@ -473,6 +475,15 @@ def main():
     pad_age_groups = list(constant.age_groups[config.pad_method].keys())
     pad_age_breaks = [ x for x, _ in list(constant.age_groups[config.pad_method].values()) ] + [ np.inf ]
 
+    if args.without_domain_approach:
+        logging.info("Domain approach is not used for feature selection.")
+        constant.domain_approach_mapping = {
+            "ALL": {
+                "domains": ["STRUCTURE", "MOTOR", "MEMORY", "LANGUAGE"], 
+                "approaches": ["MRI", "BEH", "EEG"]
+            }
+        }
+
     ## Save the description of the current execution as a JSON file:
     desc = {
         "DataVersion": config.data_file_path, 
@@ -486,7 +497,8 @@ def main():
         "FeatureSelectionModel": config.feature_selection_model, 
         "FeatureExplainedRatio": config.explained_ratio, 
         "OptimizedModels": constant.model_names, 
-        "UsedPretrainedModels": args.pretrained_model_folder
+        "UsePretrainedModels": args.pretrained_model_folder, 
+        "WithoutDomainApproach": args.without_domain_approach
     }
     desc = convert_np_types(desc)
 
@@ -560,16 +572,12 @@ def main():
                             continue
 
                         else: 
-                            if ori_name == "BEH": # if the orientation is "BEH", use all features
-                                selected_features = included_features
-
-                            else: # otherwise, select features using the specified model
-                                selected_features = feature_selection(
-                                    X=group_data["X_train"].loc[:, included_features], 
-                                    y=group_data["y_train"], 
-                                    model_name=config.feature_selection_model, 
-                                    explained_ratio=config.explained_ratio
-                                )
+                            selected_features = feature_selection(
+                                X=group_data["X_train"].loc[:, included_features], 
+                                y=group_data["y_train"], 
+                                model_name=config.feature_selection_model, 
+                                explained_ratio=config.explained_ratio
+                            )
 
 ## STEP-3. Find the best model and save its parameters -------------------------------------------------------
 
