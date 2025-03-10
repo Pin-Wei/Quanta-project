@@ -12,21 +12,56 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 
 ## Argument parser: -------------------------------------------------------------------
-parser = argparse.ArgumentParser(description="")
+
+parser = argparse.ArgumentParser(
+    description="""
+    The dataset was divided into groups according to the gender and age range of the 
+    participants, and different models were then trained based on the data collected 
+    from three orientations (structural, behavioral, and functional) in these groups.
+    
+    This script generates the derivatives of the model outputs from the folder 
+    specified by the '-f' argument, including:
+                                 
+    1) A table listing the model types and feature numbers used: 
+        '[table] model types and feature numbers.csv'.
+    2) A table listing the medians and standard deviations of ages for each participant group:
+        '[table] data median & std.csv'.
+    2+) If down-sampling (-ds) or bootstrapping (-bs) is specified, a folder named 
+      '{sampling_method} (N={args.sample_size}; seed={seed})' will be created, 
+      and a similar table will be generated after down-sampling or bootstrapping: 
+        '[table] balanced data median & std.csv'.
+    3) A bar plot comparing PAD values for different models:
+        '[barplot] PAD values.png'.
+    4) Matrices of pairwise correlations between PAD values for models trainied on 
+      data collected from different orientations in each subject group: 
+        '[cormat] {group_name}.png'.
+    5) A table of pairwise correlations between PAD values for models trainied on 
+      data collected from different orientations in each subject group: 
+        '[table] pairwise corr.xlsx'.
+    6) Scatter plots comparing PAD values for models trainied on data collected from
+      different orientations in each subject group: 
+        '[scatter] {group_name} ({ori_1} × {ori_2}).png'.
+
+    The files will be saved in a folder with the same name as the '-f' argument
+    under the 'derivatives' folder.
+    """
+)
 parser.add_argument("-f", "--folder", type=str, required=True, 
                     help="The folder name of the model outputs.")
 parser.add_argument("-ds", "--downsample", action="store_true", default=False, 
-                    help="Whether to down-sample the data or not.")
+                    help="Down-sample the data without replacement.")
 parser.add_argument("-bs", "--bootstrap", action="store_true", default=False, 
-                    help="Whether to down-sample the data using bootstrapping or not.")
+                    help="Down-sample the data with replacement (bootstrapping).")
 parser.add_argument("-n", "--sample_size", type=int, default=50, 
-                    help="The number of samples to down-sample to.")
-parser.add_argument("-padac", "--pad_corrected", type=int, default=1,
-                    help="Whether to use corrected PAD values or not. (1: Yes, 0: No)")
+                    help="The number of participants to down-sample to.")
+parser.add_argument("-s", "--seed", type=int, default=None, 
+                    help="The random seed for downsampling or bootstrapping.")
+parser.add_argument("-pad", "--use_pad", action="store_true", default=False,
+                    help="Use PAD values that have not been corrected for age.")
 parser.add_argument("-o", "--overwrite", action="store_true", default=False, 
-                    help="Whether to overwrite the existing files or not.")
-parser.add_argument("-pa", "--p_adjust", type=int, default=0, 
-                    help="Whether to adjust p-values or not. (1: Yes, 0: No)")
+                    help="Overwrite if the output files already exist.")
+parser.add_argument("-pa", "--p_adjust", action="store_true", default=False,
+                    help="Use adjusted p-values for pairwise correlations.")
 args = parser.parse_args()
 
 ## Configuration class: ---------------------------------------------------------------
@@ -36,6 +71,13 @@ class Config:
         self.folder = args.folder
         self.input_folder = os.path.join("outputs", self.folder)
         self.output_folder = os.path.join("derivatives", self.folder)
+        self.model_info_filename    = "[table] model types and feature numbers.csv"
+        self.disc_table_filename    = "[table] data median & std.csv"
+        self.balanced_disc_table_fn = "[table] balanced data median & std.csv"
+        self.barplot_filename       = "[barplot] PAD values.png"
+        self.cormat_fn_template     = "[cormat] GroupName.png"
+        self.corr_table_filename    = "[table] pairwise corr.xlsx"
+        self.scatter_fn_template    = "[scatter] GroupName (Type1 × Type2).png"
 
 ## Load parameters: -------------------------------------------------------------------
 
@@ -116,7 +158,7 @@ def load_data(config, selected_cols):
 
     return DF
 
-## Save model types and feature numbers to a table: -----------------------------------
+## Function: --------------------------------------------------------------------------
 
 def save_model_info(DF, label_cols, output_path):
     '''
@@ -133,7 +175,7 @@ def save_model_info(DF, label_cols, output_path):
     model_info.to_csv(output_path)
     print(f"\nModel types and feature numbers are saved to:\n{output_path}")
 
-## Save discriptive statistics: -------------------------------------------------------
+## Function: --------------------------------------------------------------------------
 
 def save_discriptive_table(DF, output_path):
     '''
@@ -156,7 +198,7 @@ def save_discriptive_table(DF, output_path):
 
     return part_DF, stats_table
 
-## Down-sampling or bootstrapping data: -----------------------------------------------
+## Function: --------------------------------------------------------------------------
 
 def make_balanced_dataframe(part_DF, stats_table, seed, output_path, 
     iters_n=1000, med_diff_good=0.1, std_diff_good=0.5, alpha=0.5):
@@ -239,7 +281,7 @@ def make_balanced_dataframe(part_DF, stats_table, seed, output_path,
 
     return balanced_part_DF
 
-## Modify DataFrame and transform to long format: -------------------------------------
+## Function: --------------------------------------------------------------------------
 
 def modify_DF(used_DF, config):
     '''
@@ -270,7 +312,7 @@ def modify_DF(used_DF, config):
 
     return DF_long
 
-## Bar plot of PAD values: ------------------------------------------------------------
+## Function: --------------------------------------------------------------------------
 
 def plot_PAD_bars(DF_long, x_lab, output_path, overwrite=False):
     '''
@@ -290,7 +332,7 @@ def plot_PAD_bars(DF_long, x_lab, output_path, overwrite=False):
         print(f"\nBar plot of the PAD values is saved to\n{output_path}")
         plt.close()
 
-## Correlation matrices: --------------------------------------------------------------
+## Function set: ----------------------------------------------------------------------
 
 def formated_corr(x, y):
     r, p = pearsonr(x, y, alternative='two-sided')
@@ -336,7 +378,7 @@ def plot_cormat(sub_df_wide, ori_types, output_path, overwrite=False,
         print(f"\nCorrelation matrix is saved to\n{output_path}")
         plt.close()
 
-## Pairwise correlations: ------------------------------------------------------------
+## Function: --------------------------------------------------------------------------
 
 def pairwise_corr(sub_df_dict, excel_file, overwrite=False):
     '''
@@ -366,7 +408,7 @@ def pairwise_corr(sub_df_dict, excel_file, overwrite=False):
 
     return corr_DF
 
-## Correlation (scatter) plots --------------------------------------------------------
+## Function set: ----------------------------------------------------------------------
 
 def print_p(p):
     if p < .001:
@@ -383,6 +425,8 @@ def print_p(p):
 def plot_corr_scatter(corr_DF, sub_df, group_name, t1, t2, p_apply, output_path, overwrite=False, 
                       font_scale=1.2, figsize=(5, 5), dpi=500):
     '''
+    Plot the correlation scatter plot for sub-dataframes.
+    <no returns>
     '''
     if (not os.path.exists(output_path)) and (not overwrite):
         sns.set_theme(style='whitegrid', font_scale=font_scale)
@@ -429,28 +473,35 @@ def main():
 
     ## Aggregate model types and feature numbers (save to a table):
     save_model_info(
-        DF=DF, label_cols=config.label_cols, output_path=os.path.join(
-            config.output_folder, "[table] model types and feature numbers.csv"
-    ))
+        DF, config.label_cols,
+        os.path.join(config.output_folder, config.model_info_filename)
+    )
 
     ## Aggregate median and STD of the data (save to a table):
     part_DF, stats_table = save_discriptive_table(
-        DF=DF, output_path=os.path.join(
-            config.output_folder, "[table] data median & std.csv"
-    ))
+        DF, os.path.join(config.output_folder, config.disc_table_filename)
+    )
 
     ## Down-sample or bootstrap the data if specified:
     if args.downsample or args.bootstrap:
         sampling_method = "down-sampling" if args.downsample else "bootstrapping"
-        seed = np.random.randint(0, 10000)
+        if args.seed is not None:
+            seed = args.seed
+        else:
+            seed = np.random.randint(0, 10000)
         sub_folder = os.path.join(
             config.output_folder, f"{sampling_method} (N={args.sample_size}; seed={seed})")
         if not os.path.exists(sub_folder):
             os.makedirs(sub_folder)
-        used_DF = make_balanced_dataframe(
-            part_DF, stats_table, seed, os.path.join(
-                sub_folder, "[table] balanced data median & std.csv"
-        ))
+        balanced_DF = make_balanced_dataframe(
+            part_DF, stats_table, seed, 
+            os.path.join(sub_folder, config.balanced_disc_table_fn)
+        )
+        if config.sep_sex:
+            merge_on = [config.sid_name, "Age", "Sex", "AgeGroup"]
+        else:
+            merge_on = [config.sid_name, "Age", "AgeGroup"]
+        used_DF = balanced_DF.merge(DF, on=merge_on, how="left")
     else:
         used_DF = DF
         sub_folder = config.output_folder
@@ -461,14 +512,14 @@ def main():
     ## Plot of PAD bars: 
     x_lab = "AgeSex" if config.sep_sex else "AgeGroup"
     plot_PAD_bars(
-        DF_long, x_lab, os.path.join(
-            sub_folder, f"[barplot] PAD values.png"
-        ), overwrite=args.overwrite
+        DF_long, x_lab, os.path.join(sub_folder, config.barplot_filename), 
+        overwrite=args.overwrite
     )
     
-    ## Plot correlation matrices:
-    pad_type = ["PAD", "PAD_ac"][args.pad_corrected]
+    ## Specify PAD type:
+    pad_type = "PAD" if args.use_pad else "PAD_ac"
 
+    ## Create an index column for pivoting:
     if args.bootstrap or ("SID" not in DF_long.columns) or ("Age" not in DF_long.columns):
         DF_long["idx"] = (
             DF_long
@@ -480,6 +531,7 @@ def main():
     else:
         idx_cols = ["SID", "Age"]
 
+    ## Pivot data for calculating correlations:
     sub_df_dict = {}
     for (age_group, sex) in config.label_list:
         group_name = f"{age_group}_{sex}"
@@ -491,29 +543,33 @@ def main():
         )
         sub_df_dict[group_name] = sub_df_wide
 
+        ## Plot correlation matrices:
         plot_cormat(
             sub_df_wide, set(DF_long["Type"]), os.path.join(
-                sub_folder, f"[cormat] {group_name}.png"
-            ), overwrite=args.overwrite
+                sub_folder, config.cormat_fn_template.replace("GroupName", group_name)),
+            figsize=(3, 3) if len(config.feature_orientations) <= 3 else (4, 4),
+            overwrite=args.overwrite
         )
         
-    ## Calculate pairwise correlations (and save to different sheets in an .xlsx file):
+    ## Calculate pairwise correlations (save to different sheets in an .xlsx file):
     corr_DF = pairwise_corr(
         sub_df_dict, os.path.join(
-            sub_folder, f"[table] pairwise corr.xlsx"
+            sub_folder, config.corr_table_filename
         ), overwrite=args.overwrite
     )
 
     ## Plot correlations (scatter plots):
-    p_apply = ['p-unc', 'p-corr'][args.p_adjust]
+    p_apply = "p-corr" if args.p_adjust else "p-unc"
 
     for group_name, sub_df in sub_df_dict.items():
         for t1, t2 in [("BEH", "FUN"), ("BEH", "STR"), ("FUN", "STR")]:
             plot_corr_scatter(
-                corr_DF, sub_df, group_name, t1, t2, p_apply, os.path.join(
-                    sub_folder, f"[scatter] {group_name} ({t1} × {t2}).png"
-                ), overwrite=args.overwrite
+                corr_DF, sub_df, group_name, t1, t2, p_apply, 
+                os.path.join(sub_folder, config.scatter_fn_template.replace("GroupName", group_name).replace("Type1", t1).replace("Type2", t2)), 
+                overwrite=args.overwrite
             )
+
+## Finally: ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     main()
