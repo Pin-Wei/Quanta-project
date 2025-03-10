@@ -479,7 +479,7 @@ def main():
         overwrite=args.overwrite
     )
 
-    ## Aggregate median and STD of the data (save to a table):
+    ## Aggregate medians and STDs of ages for each participant group (save to a table):
     part_DF, stats_table = save_discriptive_table(
         DF, os.path.join(config.output_folder, config.disc_table_filename)
     )
@@ -508,10 +508,10 @@ def main():
         used_DF = DF
         sub_folder = config.output_folder
 
-    ## Modify DataFrame and transform to long format:
+    ## Modify DataFrame and transform it to long format:
     DF_long = modify_DF(used_DF, config)
     
-    ## Plot of PAD bars: 
+    ## Plot PAD bars: 
     x_lab = "AgeSex" if config.sep_sex else "AgeGroup"
     plot_PAD_bars(
         DF_long, x_lab, os.path.join(sub_folder, config.barplot_filename), 
