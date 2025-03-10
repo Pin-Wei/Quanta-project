@@ -160,20 +160,21 @@ def load_data(config, selected_cols):
 
 ## Function: --------------------------------------------------------------------------
 
-def save_model_info(DF, label_cols, output_path):
+def save_model_info(DF, label_cols, output_path, overwrite=False):
     '''
     Save the model types and feature numbers to a .csv table.
     <no returns>
     '''
-    model_info = (DF
-        .loc[:, label_cols + ["Type", "Info"]]
-        .drop_duplicates()
-        .pivot(index = label_cols, 
-            columns = "Type", 
-            values = "Info")
-    )
-    model_info.to_csv(output_path)
-    print(f"\nModel types and feature numbers are saved to:\n{output_path}")
+    if (not os.path.exists(output_path)) or overwrite:
+        model_info = (DF
+            .loc[:, label_cols + ["Type", "Info"]]
+            .drop_duplicates()
+            .pivot(index = label_cols, 
+                columns = "Type", 
+                values = "Info")
+        )
+        model_info.to_csv(output_path)
+        print(f"\nModel types and feature numbers are saved to:\n{output_path}")
 
 ## Function: --------------------------------------------------------------------------
 
@@ -306,7 +307,7 @@ def modify_DF(used_DF, config):
             "FUNCTIONAL": "FUN"
         })
     )
-    DF_long = DF_long.sort_values(by=["Sex", "AgeGroup"])
+    DF_long = DF_long.sort_values(by=["Sex", "AgeGroup"], ascending=False)
     if config.sep_sex:
         DF_long["AgeSex"] = DF_long["AgeGroup"] + "_" + DF_long["Sex"]
 
@@ -319,7 +320,7 @@ def plot_PAD_bars(DF_long, x_lab, output_path, overwrite=False):
     Plot the PAD values.
     <no returns>
     '''
-    if (not os.path.exists(output_path)) or (not overwrite):
+    if (not os.path.exists(output_path)) or overwrite:
         sns.set_theme(style="whitegrid")
         sns.set_context("talk", font_scale=1.2)
         g = sns.catplot(
@@ -351,7 +352,7 @@ def plot_cormat(sub_df_wide, ori_types, output_path, overwrite=False,
     Plot the correlation matrix for sub-dataframes.
     <no returns>
     '''
-    if (not os.path.exists(output_path)) and (not overwrite):
+    if (not os.path.exists(output_path)) or overwrite:
         sns.set_theme(style='white', font_scale=font_scale)
         fig, ax = plt.subplots(figsize=figsize, dpi=dpi) 
         cormat = sub_df_wide.corr()
@@ -393,7 +394,7 @@ def pairwise_corr(sub_df_dict, excel_file, overwrite=False):
             pg.pairwise_corr(sub_df, padjust='bonf')
             .sort_values(by=['p-unc'])[['X', 'Y', 'n', 'r', 'CI95%', 'p-unc', 'p-corr']]
         )
-        if (not os.path.exists(excel_file)) and (not overwrite):
+        if (not os.path.exists(excel_file)) or overwrite:
             if not os.path.exists(excel_file):
                 pw_corr.to_excel(excel_file, sheet_name=group_name, index=False)
             else:
@@ -428,7 +429,7 @@ def plot_corr_scatter(corr_DF, sub_df, group_name, t1, t2, p_apply, output_path,
     Plot the correlation scatter plot for sub-dataframes.
     <no returns>
     '''
-    if (not os.path.exists(output_path)) and (not overwrite):
+    if (not os.path.exists(output_path)) or overwrite:
         sns.set_theme(style='whitegrid', font_scale=font_scale)
         fig = plt.figure(num=None, figsize=figsize, dpi=dpi)
         g = sns.JointGrid(
@@ -474,7 +475,8 @@ def main():
     ## Aggregate model types and feature numbers (save to a table):
     save_model_info(
         DF, config.label_cols,
-        os.path.join(config.output_folder, config.model_info_filename)
+        os.path.join(config.output_folder, config.model_info_filename), 
+        overwrite=args.overwrite
     )
 
     ## Aggregate median and STD of the data (save to a table):
@@ -553,9 +555,8 @@ def main():
         
     ## Calculate pairwise correlations (save to different sheets in an .xlsx file):
     corr_DF = pairwise_corr(
-        sub_df_dict, os.path.join(
-            sub_folder, config.corr_table_filename
-        ), overwrite=args.overwrite
+        sub_df_dict, os.path.join(sub_folder, config.corr_table_filename), 
+        overwrite=args.overwrite
     )
 
     ## Plot correlations (scatter plots):
