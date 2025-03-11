@@ -3,13 +3,17 @@
 import os
 import json
 import argparse
+import itertools
 import numpy as np
 import pandas as pd
-import itertools
 import pingouin as pg
 from scipy.stats import pearsonr
+
 import seaborn as sns
 import matplotlib.pyplot as plt
+import plotly.express as px
+import plotly.io as pio
+from plotly.subplots import make_subplots
 
 ## Argument parser: -------------------------------------------------------------------
 
@@ -41,6 +45,9 @@ parser = argparse.ArgumentParser(
     6) Scatter plots comparing PAD values for models trainied on data collected from
       different orientations in each subject group: 
         '[scatter] {group_name} ({ori_1} × {ori_2}).png'.
+    7) Sunburst plots visualizing the proportion of features domain and approach used
+      in each model: 
+        '[pie] {ori_type}.png'.
 
     The files will be saved in a folder with the same name as the '-f' argument
     under the 'derivatives' folder.
@@ -78,63 +85,88 @@ class Config:
         self.cormat_fn_template     = "[cormat] GroupName.png"
         self.corr_table_filename    = "[table] pairwise corr.xlsx"
         self.scatter_fn_template    = "[scatter] GroupName (Type1 × Type2).png"
+        self.sunburst_fn_template   = "[pie] FeatureType.png"
+
+class Description:
+    def __init__(self):
+        self.domain_approach_mapping = {
+            "STRUCTURE": {
+                "domains": ["STRUCTURE"],
+                "approaches": ["MRI"]
+            }, 
+            "BEH": {
+                "domains": ["MOTOR", "MEMORY", "LANGUAGE"],
+                "approaches": ["BEH"]
+            },
+            "FUNCTIONAL": {
+                "domains": ["MOTOR", "MEMORY", "LANGUAGE"],
+                "approaches": ["EEG", "MRI"]
+            }, 
+            "ALL": {
+                "domains": ["STRUCTURE", "MOTOR", "MEMORY", "LANGUAGE"], 
+                "approaches": ["MRI", "BEH", "EEG"]
+            }
+        }   
 
 ## Load parameters: -------------------------------------------------------------------
 
-def load_parameters(config):
+def load_description(config, desc):
     '''
-    Load the parameters from the description file and update the configuration.
+    Load the parameters from the description file and update the description object.
     <returns>:
-    - config: Updated configuration
+    - desc: Updated description object.
     '''
     ## Load description file: 
     desc_path = os.path.join(config.input_folder, "description.json")
     with open(desc_path, 'r', errors='ignore') as f:
-        desc = json.load(f)
+        desc_json = json.load(f)
 
     ## Data groups:
-    config.sep_sex = bool(desc["SexSeparated"]) 
-    config.age_group_labels = desc["AgeGroups"]
-    config.age_breaks = (
+    desc.sep_sex = bool(desc_json["SexSeparated"]) 
+    desc.age_group_labels = desc_json["AgeGroups"]
+    desc.age_breaks = (
         [ 0 ] + 
-        [ int(x.split("-")[0]) for x in config.age_group_labels[1:-1] ] + 
-        [ int(config.age_group_labels[-1].split("-")[-1]) ] + 
+        [ int(x.split("-")[0]) for x in desc.age_group_labels[1:-1] ] + 
+        [ int(desc.age_group_labels[-1].split("-")[-1]) ] + 
         [ np.inf ]
     )
-    config.label_cols = ["AgeGroup", "Sex"] if config.sep_sex else ["AgeGroup"]
-    if config.sep_sex:
-        config.label_list = list(itertools.product(config.age_group_labels, ["M", "F"]))
+    desc.label_cols = ["AgeGroup", "Sex"] if desc.sep_sex else ["AgeGroup"]
+    if desc.sep_sex:
+        desc.label_list = list(itertools.product(desc.age_group_labels, ["M", "F"]))
     else:
-        config.label_list = config.age_group_labels   
+        desc.label_list = desc.age_group_labels   
 
     ## Used feature orientations (Options: ["STRUCTURE", "BEH", "FUNCTIONAL", "ALL"]):
-    config.feature_orientations = desc["FeatureOrientations"] 
+    desc.feature_orientations = desc_json["FeatureOrientations"] 
 
     ## If testset ratio is 0, then the data was not split into training and testing sets:
-    config.sid_name = "SubjID" if int(desc["TestsetRatio"]) == 0 else "TestingSubjID"
+    desc.sid_name = "SubjID" if int(desc_json["TestsetRatio"]) == 0 else "TestingSubjID"
 
-    return config
+    return desc
 
 ## Load data: -------------------------------------------------------------------------
 
-def load_data(config, selected_cols):
+def load_data(config, desc,selected_cols):
     '''
-    Load the data from the input folder and return a DataFrame.
+    Load the model results from the input folder.
     <returns>:
     - DF: DataFrame with selected columns.
+    - selected_features: Dictionary with selected features for each feature orientation.
     '''
-    selected_result_list = []
     print("\nLoading data...")
 
-    for label in config.label_list:
-        if config.sep_sex:
+    selected_result_list = []
+    selected_features = { o: {} for o in desc.feature_orientations }
+
+    for label in desc.label_list:
+        if desc.sep_sex:
             age_group, sex = label
             group_name = f"{age_group}_{sex}"
         else:
             age_group = label
             group_name = label
 
-        for ori_name in config.feature_orientations:
+        for ori_name in desc.feature_orientations:
             data_path = os.path.join(
                 config.input_folder, f"results_{group_name}_{ori_name}.json")
             
@@ -142,21 +174,21 @@ def load_data(config, selected_cols):
                 print(os.path.basename(data_path))
 
                 with open(data_path, 'r', errors='ignore') as f:
-                    data = json.load(f)
+                    results = json.load(f)
                     selected_results = pd.DataFrame({ 
-                        k: v for k, v in data.items() if k in selected_cols
+                        k: v for k, v in results.items() if k in selected_cols
                     })
                     selected_results["AgeGroup"] = age_group
-                    if config.sep_sex:
+                    if desc.sep_sex:
                         selected_results["Sex"] = sex
                     selected_results["Type"] = ori_name
-                    selected_results["Info"] = f"{data['Model']}_{data['NumberOfFeatures']}"
-                    
                     selected_result_list.append(selected_results)
+
+                    selected_features[ori_name][group_name] = results["FeatureNames"]
 
     DF = pd.concat(selected_result_list, ignore_index=True)
 
-    return DF
+    return DF, selected_features
 
 ## Function: --------------------------------------------------------------------------
 
@@ -166,12 +198,15 @@ def save_model_info(DF, label_cols, output_path, overwrite=False):
     <no returns>
     '''
     if (not os.path.exists(output_path)) or overwrite:
+        DF["Info"] = DF.apply(
+            lambda x: f"{x['Model']}_{x['NumberOfFeatures']}", axis=1
+        )
         model_info = (DF
             .loc[:, label_cols + ["Type", "Info"]]
             .drop_duplicates()
             .pivot(index = label_cols, 
-                columns = "Type", 
-                values = "Info")
+                   columns = "Type", 
+                   values = "Info")
         )
         model_info.to_csv(output_path)
         print(f"\nModel types and feature numbers are saved to:\n{output_path}")
@@ -284,7 +319,7 @@ def make_balanced_dataframe(part_DF, stats_table, seed, output_path,
 
 ## Function: --------------------------------------------------------------------------
 
-def modify_DF(used_DF, config):
+def modify_DF(used_DF, config, desc):
     '''
     Modify the DataFrame and transform it to long format.
     <returns>:
@@ -295,9 +330,9 @@ def modify_DF(used_DF, config):
     used_DF["PAD_ac"] = np.abs(used_DF["CorrectedPAD"])
 
     DF_long = (used_DF
-        .loc[:, ["SID", "Age"] + config.label_cols + ["Type", "PAD", "PAD_ac"]]
+        .loc[:, ["SID", "Age"] + desc.label_cols + ["Type", "PAD", "PAD_ac"]]
         .melt(
-            id_vars = ["SID", "Age"] + config.label_cols + ["Type"], 
+            id_vars = ["SID", "Age"] + desc.label_cols + ["Type"], 
             value_vars = ["PAD", "PAD_ac"], 
             var_name = "PAD_type", 
             value_name = "PAD_value"
@@ -308,7 +343,7 @@ def modify_DF(used_DF, config):
         })
     )
     DF_long = DF_long.sort_values(by=["Sex", "AgeGroup"], ascending=False)
-    if config.sep_sex:
+    if desc.sep_sex:
         DF_long["AgeSex"] = DF_long["AgeGroup"] + "_" + DF_long["Sex"]
 
     return DF_long
@@ -330,12 +365,12 @@ def plot_PAD_bars(DF_long, x_lab, output_path, overwrite=False):
         )
         g.set_axis_labels("", "PAD Value")
         plt.savefig(output_path)
-        print(f"\nBar plot of the PAD values is saved to\n{output_path}")
+        print(f"\nBar plot of the PAD values is saved to:\n{output_path}")
         plt.close()
 
 ## Function set: ----------------------------------------------------------------------
 
-def formated_corr(x, y):
+def formatted_r(x, y):
     r, p = pearsonr(x, y, alternative='two-sided')
     if p < .001:
         return f"{r:.2f}***"
@@ -362,7 +397,7 @@ def plot_cormat(sub_df_wide, ori_types, output_path, overwrite=False,
         annot_mat = annot_mat.astype(object)
         annot_mat.iloc[:, :] = ""
         for t1, t2 in itertools.combinations(ori_types, 2):
-            annot_mat.loc[t1, t2] = formated_corr(sub_df_wide[t1], sub_df_wide[t2])
+            annot_mat.loc[t1, t2] = formatted_r(sub_df_wide[t1], sub_df_wide[t2])
             annot_mat.loc[t2, t1] = annot_mat.loc[t1, t2] 
         sns.heatmap(
             cormat, mask=mask, # square=True, 
@@ -376,7 +411,7 @@ def plot_cormat(sub_df_wide, ori_types, output_path, overwrite=False,
         ax.set_xlabel("")
         plt.tight_layout()
         plt.savefig(output_path)
-        print(f"\nCorrelation matrix is saved to\n{output_path}")
+        print(f"\nCorrelation matrix is saved to:\n{output_path}")
         plt.close()
 
 ## Function: --------------------------------------------------------------------------
@@ -400,7 +435,7 @@ def pairwise_corr(sub_df_dict, excel_file, overwrite=False):
             else:
                 with pd.ExcelWriter(excel_file, mode='a') as writer: 
                     pw_corr.to_excel(writer, sheet_name=group_name, index=False)
-            print(f"\nPairwise comparisons is saved to\n{excel_file}")
+            print(f"\nPairwise comparisons is saved to:\n{excel_file}")
 
         pw_corr.insert(0, "AgeSex", group_name)
         pw_corr_list.append(pw_corr)
@@ -411,7 +446,7 @@ def pairwise_corr(sub_df_dict, excel_file, overwrite=False):
 
 ## Function set: ----------------------------------------------------------------------
 
-def print_p(p):
+def formatted_p(p):
     if p < .001:
         return "p < .001***"
     elif p < .01:
@@ -452,29 +487,129 @@ def plot_corr_scatter(corr_DF, sub_df, group_name, t1, t2, p_apply, output_path,
         N = sub_corr_df["n"].iloc[0]
         r = sub_corr_df["r"].iloc[0]
         p = sub_corr_df[p_apply].iloc[0]
-        p_print = print_p(p).replace("p", "p-unc") if p_apply == "p-unc" else print_p(p)
+        p_print = formatted_p(p).replace("p", "p-unc") if p_apply == "p-unc" else formatted_p(p)
 
         plt.suptitle(f"r = {r:.2f}, {p_print}, N = {N:.0f}")
         plt.tight_layout()
         plt.savefig(output_path)
-        print(f"\nCorrelation plot is saved to\n{output_path}")
         plt.close()
+        print(f"\nCorrelation plot is saved to:\n{output_path}")
 
+## Function: --------------------------------------------------------------------------
+
+def make_feature_DF(ori_name, feature_list, domain_approach_mapping):
+    '''
+    Make a DataFrame containing the domain and approach labels for each feature, 
+    as well as the proportion information of each domain and approach.
+    '''
+    ## Add domain and approach information:
+    if ori_name == "STRUCTURE":
+        domains = ["GM", "WM"]
+    else:
+        domains = domain_approach_mapping[ori_name]["domains"]
+    approaches = domain_approach_mapping[ori_name]["approaches"]
+    
+    dict_list = []    
+    for feature in feature_list:
+        for domain in domains:
+            if domain in feature:
+                for approach in approaches: 
+                    if approach in feature:
+                        dict_list.append({
+                            "domain": domain, "approach": approach, "feature": feature
+                        })
+    feature_DF = pd.DataFrame(dict_list)
+
+    ## Add percentage information:
+    main_pr = feature_DF["approach"].value_counts(normalize=True) * 100
+    feature_DF["approach_pr"] = feature_DF["approach"].map(main_pr)
+    feature_DF["approach_and_pr"] = feature_DF.apply(
+        lambda row: f"{row['approach']}<br>({row['approach_pr']:.1f}%)"
+        if row['approach_pr'] > 7 else f"{row['approach']} ({row['approach_pr']:.1f}%)", 
+        axis=1
+    )
+    sub_pr = feature_DF.groupby("approach")["domain"].value_counts(normalize=True) * 100
+    feature_DF["domain_pr"] = feature_DF.apply(
+        lambda row: sub_pr[row["approach"]][row["domain"]], axis=1
+    )
+    feature_DF["overall_pr"] = feature_DF.apply(
+        lambda row: sub_pr[row["approach"]][row["domain"]] * row["approach_pr"], axis=1
+    )
+    feature_DF["domain_and_pr"] = feature_DF.apply(
+        lambda row: f"{row['domain']}<br>({row['domain_pr']:.1f}%)" 
+        if row['overall_pr'] > 300 else f"{row['domain']} ({row['domain_pr']:.1f}%)", 
+        axis=1
+    )
+    
+    return feature_DF
+
+## Function: --------------------------------------------------------------------------
+
+def plot_feature_sunbursts(feature_DF_dict, fig_title, subplot_annots, output_path, 
+                           overwrite=False, ncol=None, nrow=None):
+    '''
+    Plot the sunburst plots for each dataframe in the dictionary, 
+    whose keys are the group names.
+    '''
+    if (not os.path.exists(output_path)) or overwrite:
+        if ncol is None:
+            ncol = 2
+        if nrow is None:
+            nfig = len(feature_DF_dict.keys())
+            nrow = (nfig + ncol - 1) // ncol
+        fig = make_subplots(
+            rows=nrow, cols=ncol, specs=[[{'type': 'domain'}] * ncol] * nrow
+        )
+        annotations = []
+        for x, (group_name, feature_DF) in enumerate(feature_DF_dict.items()):
+            c = (x % 2) + 1
+            r = (x // 2) + 1
+            sunburst_fig = px.sunburst(
+                feature_DF, path=["approach_and_pr", "domain_and_pr"], 
+                maxdepth=2, width=500, height=500
+            )
+            fig.add_trace(
+                sunburst_fig.data[0], row=r, col=c
+            )
+            annotations.append(dict(
+                x=[0.05, 0.95][c-1], y=[0.5, -0.1][r-1], xref="paper", yref="paper", 
+                showarrow=False, font=dict(size=32), 
+                text=subplot_annots[group_name]
+            ))
+        fig.update_layout(
+            grid=dict(columns=ncol, rows=nrow), 
+            margin=dict(l=0, r=0, t=10, b=100), 
+            title_text=fig_title, 
+            title_x=0.5, title_y=0.5, font=dict(size=40), 
+            template="plotly_white", 
+            width=500*ncol, height=400*nrow, 
+            annotations=annotations
+        )
+        plt.tight_layout()
+        pio.write_image(fig, output_path, format="png", scale=2)
+        plt.close()
+        print(f"\nSunburst plot is saved to:\n{output_path}")
+        
 ## Main function: ---------------------------------------------------------------------
 
 def main():
     config = Config()
-    config = load_parameters(config)
     if not os.path.exists(config.output_folder):
         os.makedirs(config.output_folder)
 
+    desc = Description()
+    desc = load_description(config, desc)
+
     ## Load data:
-    selected_cols = [config.sid_name, "Age", "PredictedAgeDifference", "CorrectedPAD"]
-    DF = load_data(config, selected_cols)
+    selected_cols = [
+        desc.sid_name, "Age", "PredictedAgeDifference", "CorrectedPAD", 
+        "Model", "NumberOfFeatures"
+    ]
+    DF, selected_features = load_data(config, desc, selected_cols)
 
     ## Aggregate model types and feature numbers (save to a table):
     save_model_info(
-        DF, config.label_cols,
+        DF, desc.label_cols,
         os.path.join(config.output_folder, config.model_info_filename), 
         overwrite=args.overwrite
     )
@@ -499,20 +634,20 @@ def main():
             part_DF, stats_table, seed, 
             os.path.join(sub_folder, config.balanced_disc_table_fn)
         )
-        if config.sep_sex:
-            merge_on = [config.sid_name, "Age", "Sex", "AgeGroup"]
+        if desc.sep_sex:
+            merge_on = [desc.sid_name, "Age", "Sex", "AgeGroup"]
         else:
-            merge_on = [config.sid_name, "Age", "AgeGroup"]
+            merge_on = [desc.sid_name, "Age", "AgeGroup"]
         used_DF = balanced_DF.merge(DF, on=merge_on, how="left")
     else:
         used_DF = DF
         sub_folder = config.output_folder
 
     ## Modify DataFrame and transform it to long format:
-    DF_long = modify_DF(used_DF, config)
+    DF_long = modify_DF(used_DF, config, desc)
     
     ## Plot PAD bars: 
-    x_lab = "AgeSex" if config.sep_sex else "AgeGroup"
+    x_lab = "AgeSex" if desc.sep_sex else "AgeGroup"
     plot_PAD_bars(
         DF_long, x_lab, os.path.join(sub_folder, config.barplot_filename), 
         overwrite=args.overwrite
@@ -535,7 +670,7 @@ def main():
 
     ## Pivot data for calculating correlations:
     sub_df_dict = {}
-    for (age_group, sex) in config.label_list:
+    for (age_group, sex) in desc.label_list:
         group_name = f"{age_group}_{sex}"
         sub_df = DF_long.query("AgeSex == @group_name & PAD_type == @pad_type")        
         sub_df_wide = (sub_df
@@ -549,7 +684,7 @@ def main():
         plot_cormat(
             sub_df_wide, set(DF_long["Type"]), os.path.join(
                 sub_folder, config.cormat_fn_template.replace("GroupName", group_name)),
-            figsize=(3, 3) if len(config.feature_orientations) <= 3 else (4, 4),
+            figsize=(3, 3) if len(desc.feature_orientations) <= 3 else (4, 4),
             overwrite=args.overwrite
         )
         
@@ -569,6 +704,39 @@ def main():
                 os.path.join(sub_folder, config.scatter_fn_template.replace("GroupName", group_name).replace("Type1", t1).replace("Type2", t2)), 
                 overwrite=args.overwrite
             )
+    
+    ## Prepare a smaller, non-duplicatie dataframe:
+    model_info_DF = (
+        DF.loc[:, desc.label_cols + ["Type", "Model", "NumberOfFeatures"]]
+        .drop_duplicates()
+    )
+
+    ## Make a dataframe with hierachical labels for selected features:
+    for ori_name in desc.domain_approach_mapping.keys():        
+
+        ## One dataframe per group:
+        feature_DF_dict = {
+            group_name: make_feature_DF(
+                ori_name, feature_list, desc.domain_approach_mapping
+            ) 
+            for group_name, feature_list in selected_features[ori_name].items()
+        }
+
+        ## Prepare annotation for each subplot:
+        subplot_annots = {}
+        for (age_group, sex) in desc.label_list: 
+            group_name = f"{age_group}_{sex}"
+            model_info = model_info_DF.query("Type == @ori_name & AgeGroup == @age_group & Sex == @sex")
+            model_type = model_info['Model'].iloc[0]
+            n_features = model_info['NumberOfFeatures'].iloc[0]
+            subplot_annots[group_name] = f"{group_name} ({model_type} - {n_features})" 
+                
+        ## One set of sunburst charts per feature type:
+        plot_feature_sunbursts(
+            feature_DF_dict, f"{ori_name[:3]}", subplot_annots, os.path.join(
+                sub_folder, config.sunburst_fn_template.replace("FeatureType", ori_name[:3])),
+            overwrite=args.overwrite
+        )
 
 ## Finally: ---------------------------------------------------------------------------
 
