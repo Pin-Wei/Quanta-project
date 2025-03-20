@@ -8,10 +8,13 @@ import numpy as np
 import pandas as pd
 from datetime import datetime
 from itertools import product
-import optuna
+import copy
+from imblearn.over_sampling import SMOTE # ADASYN 
+from imblearn.under_sampling import RandomUnderSampler
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.model_selection import KFold, train_test_split
+import optuna
 from sklearn.decomposition import PCA
 from sklearn.linear_model import LassoCV, ElasticNet
 from sklearn.ensemble import RandomForestRegressor
@@ -22,185 +25,271 @@ from sklearn.metrics import mean_absolute_error
 import pickle
 import json
 
-## Define the configuration and constants ========================================
+## Argument parser: ===================================================================
 
 parser = argparse.ArgumentParser(description="")
-parser.add_argument("-ag", "--age_method", type=int, required=True, 
-                    help="The method to define age groups. Options: 0 (cut_at_40), 1 (wais_7_seg).")
-parser.add_argument("-ss", "--sep_sex", action="store_true", default=False, 
+## How to split data into groups:
+parser.add_argument("-age", "--age_method", type=int, default=0, 
+                    help="The method to define age groups. Options: 0 (cut_at_40), 1 (wais_8_seg).")
+parser.add_argument("-sex", "--sep_sex", action="store_true", default=False, 
                     help="Whether to separate the data by gender. (default: False).")
-parser.add_argument("-tr", "--testset_ratio", type=float, default=0.0, 
-                    help="The ratio of the test set.")
-parser.add_argument("-fs", "--feature_selection_model", type=int, default=0, 
-                    help="The model to use for feature selection. Options: 0 (LassoCV), 1 (RF), 2 (XGBR).")
-parser.add_argument("-er", "--explained_ratio", type=float, default=0.9, 
-                    help="The variance to be explained by the selected features.")
-parser.add_argument("-ig", "--ignore", type=int, default=0, 
-                    help="Ignore the first N iterations (In case you might be interrupted and don't want to start from the beginning)ㄡ")
-parser.add_argument("-pmf", "--pretrained_model_folder", type=str, default=None, 
-                    help="Folder containing the pre-trained model files (.pkl).")
+## Balancing data such that all groups have the same number of participants:
+parser.add_argument("-u", "--upsample", action="store_true", default=False, 
+                    help="Up-sample the data using SMOTE.")
+parser.add_argument("-d", "--downsample", action="store_true", default=False, 
+                    help="Down-sample the data without replacement.")
+parser.add_argument("-b", "--bootstrap", action="store_true", default=False, 
+                    help="Down-sample the data with replacement (i.e., bootstrapping).")
+parser.add_argument("-n", "--sample_size", type=int, default=None, 
+                    help="The number of participants to up- or down-sample to.")
+## Split data into training and testing sets:
+parser.add_argument("-tsr", "--testset_ratio", type=float, default=0.0, 
+                    help="The ratio of the testing set.")
+## Feature selection:
 parser.add_argument("-wda", "--without_domain_approach", action="store_true", default=False, 
                     help="Whether not to use domain approach for feature selection. (default: False).")
+parser.add_argument("-fsm", "--feature_selection_model", type=int, default=0, 
+                    help="The model to use for feature selection. Options: 0 (LassoCV), 1 (RF), 2 (XGBR).")
+parser.add_argument("-epr", "--explained_ratio", type=float, default=0.9, 
+                    help="The variance to be explained by the selected features.")
+## Model training:
+parser.add_argument("-pmf", "--pretrained_model_folder", type=str, default=None, 
+                    help="Folder containing the pre-trained model files (.pkl).")
+parser.add_argument("-i", "--ignore", type=int, default=0, 
+                    help="Ignore the first N iterations (In case you might be interrupted and don't want to start from the beginning)ㄡ")
+parser.add_argument("-s", "--seed", type=int, default=None, 
+                    help="The value used to initialize all random number generator.")
 args = parser.parse_args()
 
+## Classes: ===========================================================================
+
 class Config:
-    data_file_path = os.path.join("rawdata", "DATA_ses-01_2024-12-09.csv")
-    inclusion_file_path = os.path.join("rawdata", "InclusionList_ses-01.csv")
-
-    age_method = ["cut_at_40", "wais_7_seg"][args.age_method]
-    sep_sex = args.sep_sex
-    feature_selection_model = ["LassoCV", "RF", "XGBR"][args.feature_selection_model]
-    explained_ratio = args.explained_ratio
-    testset_ratio = args.testset_ratio
-    pad_method = ["wais_7_seg", "every_5_yrs"][0]
-
-    out_folder = os.path.join("outputs", datetime.today().strftime('%Y-%m-%d_%H.%M.%S'))
-    description_outpath = os.path.join(out_folder, "description.json")
-    logging_outpath = os.path.join(out_folder, "log.txt")
-    failure_record_outpath = os.path.join(out_folder, "failure_record.txt")
-    results_outpath_template = os.path.join(out_folder, "results_groupname_oriname.json")
-    model_outpath_template = os.path.join(out_folder, "models_groupname_oriname_modeltype.pkl")
-    
+    def __init__(self):
+        self.data_file_path = os.path.join("rawdata", "DATA_ses-01_2024-12-09.csv")
+        self.inclusion_file_path = os.path.join("rawdata", "InclusionList_ses-01.csv")
+        self.age_method = ["cut_at_40", "wais_8_seg"][args.age_method]
+        self.sep_sex = args.sep_sex
+        self.testset_ratio = args.testset_ratio
+        self.feature_selection_model = ["LassoCV", "RF", "XGBR"][args.feature_selection_model]
+        self.explained_ratio = args.explained_ratio        
+        self.pad_method = ["wais_8_seg", "every_5_yrs"][0]
+        self.out_folder = os.path.join("outputs", datetime.today().strftime('%Y-%m-%d_%H.%M.%S'))
+        self.description_outpath = os.path.join(self.out_folder, "description.json")
+        self.balanced_data_outpath = os.path.join(self.out_folder, "balanced_data.csv")
+        self.logging_outpath = os.path.join(self.out_folder, "log.txt")
+        self.failure_record_outpath = os.path.join(self.out_folder, "failure_record.txt")
+        self.results_outpath_template = os.path.join(self.out_folder, "results_groupname_oriname.json")
+        self.model_outpath_template = os.path.join(self.out_folder, "models_groupname_oriname_modeltype.pkl")
 
 class Constants:
-    age_groups = { # The age groups defined by different methods
-        "cut_at_40": {
-            "le-40" : ( 0, 40),    # less than or equal to
-            "ge-41" : (41, np.inf) # greater than or equal to
-        }, 
-        "wais_7_seg": {
-            "le-24": ( 0, 24), 
-            "25-29": (25, 29), 
-            "30-34": (30, 34),
-            "35-44": (35, 44), 
-            "45-54": (45, 54), 
-            "55-64": (55, 64), 
-            "ge-65": (65, np.inf)
-        }, 
-        "every_5_yrs": {
-            "le-24": ( 0, 24), 
-            "25-29": (25, 29), 
-            "30-34": (30, 34), 
-            "35-39": (35, 39), 
-            "40-44": (40, 44), 
-            "45-49": (45, 49), 
-            "50-54": (50, 54), 
-            "55-59": (55, 59), 
-            "60-64": (60, 64), 
-            "65-69": (65, 69), 
-            "70-74": (70, 74), 
-            "ge-75": (75, np.inf)
+    def __init__(self):
+        ## The age groups defined by different methods:
+        self.age_groups = { 
+            "cut_at_40": {
+                "le-40" : ( 0, 40),    # less than or equal to
+                "ge-41" : (41, np.inf) # greater than or equal to
+            }, 
+            "wais_8_seg": {
+                "le-24": ( 0, 24), 
+                "25-29": (25, 29), 
+                "30-34": (30, 34),
+                "35-44": (35, 44), 
+                "45-54": (45, 54), 
+                "55-64": (55, 64), 
+                # "ge-65": (65, np.inf)
+                "65-69": (65, 69), 
+                "ge-70": (70, np.inf)
+            }, 
+            "every_5_yrs": {
+                "le-24": ( 0, 24), 
+                "25-29": (25, 29), 
+                "30-34": (30, 34), 
+                "35-39": (35, 39), 
+                "40-44": (40, 44), 
+                "45-49": (45, 49), 
+                "50-54": (50, 54), 
+                "55-59": (55, 59), 
+                "60-64": (60, 64), 
+                "65-69": (65, 69), 
+                "70-74": (70, 74), 
+                "ge-75": (75, np.inf)
+            }
         }
-    }
-    domain_approach_mapping = { # The correspondence between domains and approaches
-        "STRUCTURE": {
-            "domains": ["STRUCTURE"],
-            "approaches": ["MRI"]
-        },
-        "BEH": {
-            "domains": ["MOTOR", "MEMORY", "LANGUAGE"],
-            "approaches": ["BEH"]
-        },
-        "FUNCTIONAL": {
-            "domains": ["MOTOR", "MEMORY", "LANGUAGE"],
-            "approaches": ["EEG", "MRI"]  # Include domain-specific MRI features as fMRI
+        ## The correspondence between domains and approaches:
+        self.domain_approach_mapping = { 
+            "STRUCTURE": {
+                "domains": ["STRUCTURE"],
+                "approaches": ["MRI"]
+            },
+            "BEH": {
+                "domains": ["MOTOR", "MEMORY", "LANGUAGE"],
+                "approaches": ["BEH"]
+            },
+            "FUNCTIONAL": {
+                "domains": ["MOTOR", "MEMORY", "LANGUAGE"],
+                "approaches": ["EEG", "MRI"]
+            }
         }
-    }
-    model_names = [ # The names of models to evaluate
-        "ElasticNet", 
-        "RF",   # RandomForestRegressor
-        "CART", # DecisionTreeRegressor
-        "LGBM", # lgb.LGBMRegressor
-        "XGBM"  # xgb.XGBRegressor
-    ]
+        ## The names of models to evaluate:
+        self.model_names = [ 
+            "ElasticNet", 
+            "RF",   # RandomForestRegressor
+            "CART", # DecisionTreeRegressor
+            "LGBM", # lgb.LGBMRegressor
+            "XGBM"  # xgb.XGBRegressor
+        ]
+        ## The number of participants in each balanced group:
+        self.N_per_group = {
+            "SMOTE": 60, 
+            "downsample": 15, 
+            "bootstrap": 15
+        }
 
-## Define functions =============================================================
+## Functions: =========================================================================
 
-def load_and_preprocess_data(data_file_path, inclusion_file_path, age_boundaries, age_bin_labels, sep_sex=False, seed=42, testset_ratio=0.3):
+def load_and_merge_datasets(data_file_path, inclusion_file_path):
     '''
-    Return: 
-    - preprocessed_grouped_datasets (dict): 
-        A dictionary whose keys are defined by "sub_df_labels" 
-        and values are a dictionary of train-test splited data, storing 
-        the standardized feature values, age, and ID numbers of participants.
+    Read the data and inclusion table, and merge them.
     '''
-    logging.info("Loading and preprocessing data...")
-
     ## Load the main dataset:
-    df = pd.read_csv(data_file_path)
-
+    DF = pd.read_csv(data_file_path)
+    logging.info("Successfully loaded the main dataset.")
+    
     ## Load the file marking whether a data has been collected from individual participants:
     inclusion_df = pd.read_csv(inclusion_file_path)
+    logging.info("Successfully loaded the inclusion table.")
 
     ## Only include participants with MRI data:
     inclusion_df = inclusion_df.query("MRI == 1")
 
     ## Ensure consistent ID column names:
-    if "BASIC_INFO_ID" in df.columns:
-        df = df.rename(columns={"BASIC_INFO_ID": "ID"})
+    if "BASIC_INFO_ID" in DF.columns:
+        DF = DF.rename(columns={"BASIC_INFO_ID": "ID"})
 
     ## Merge the two dataframes to apply inclusion criteria:
-    df = pd.merge(df, inclusion_df[["ID"]], on="ID", how='inner')
-    df["BASIC_INFO_SEX"] = df["BASIC_INFO_SEX"].astype('int')
-    df["BASIC_INFO_AGE"] = df["BASIC_INFO_AGE"].astype('int')
+    DF = pd.merge(DF, inclusion_df[["ID"]], on="ID", how='inner')
 
-    ## Divide the data into multiple subsets according to the given age ranges:
-    if sep_sex == False:
-        sub_df_labels = age_bin_labels
-        sub_df_list = [
-            df[df["BASIC_INFO_AGE"].between(lower_b, upper_b)] 
-            for lower_b, upper_b in age_boundaries
-        ]
-    else: # Additionally, separate the data by sex:
-        sub_df_labels = [
-            f"{age_group}_{sex}" for age_group, sex in list(product(age_bin_labels, ["M", "F"]))
-        ]
-        sub_df_list = [
-            df[(df["BASIC_INFO_AGE"].between(lower_b, upper_b)) & (df["BASIC_INFO_SEX"] == sex)] 
-            for (lower_b, upper_b), sex in list(product(age_boundaries, [1, 2]))
-        ]
+    ## Transform column data type:
+    DF["BASIC_INFO_SEX"] = DF["BASIC_INFO_SEX"].astype('int')
+    DF["BASIC_INFO_AGE"] = DF["BASIC_INFO_AGE"].astype('int')
 
-    ## Separately preprocess different data subsets: 
-    preprocessed_grouped_datasets = {}
-    for group_name, sub_df in zip(sub_df_labels, sub_df_list):
+    return DF
 
-        if sub_df.empty:
-            preprocessed_grouped_datasets[group_name] = None
-        else:
-            sub_df = sub_df.reset_index(drop=True)
-            X = sub_df.drop(columns=["ID", "BASIC_INFO_AGE"])
-            y = sub_df["BASIC_INFO_AGE"]
-            ids = sub_df["ID"]
+def make_balanced_dataset(DF, balancing_method, age_bin_dict, N_per_group, seed):
+    '''
+    Make balanced datasets using specified balancing methods, including:
+    
+    OverSampling using 'SMOTE' (Synthetic Minority Oversampling Technique)
+    - see: https://imbalanced-learn.org/stable/references/generated/imblearn.over_sampling.SMOTE.html#imblearn.over_sampling.SMOTE.fit_resample
+    
+    UnderSampling using 'RandomUnderSampler' with (bootstrap) or without replacement (downsample)
+    - see: https://imbalanced-learn.org/stable/references/generated/imblearn.under_sampling.RandomUnderSampler.html#imblearn.under_sampling.RandomUnderSampler
+    '''
+    ## Assign "AGE-GROUP_SEX" labels:
+    DF["AGE-GROUP"] = pd.cut(
+        x=DF["BASIC_INFO_AGE"], 
+        bins=[ x for x, _ in list(age_bin_dict.values()) ] + [ np.inf ], 
+        labels=list(age_bin_dict.keys())
+    )
+    DF["SEX"] = DF["BASIC_INFO_SEX"].map({1: "M", 2: "F"})
+    DF["AGE-GROUP_SEX"] = DF.loc[:, ["AGE-GROUP", "SEX"]].agg("_".join, axis=1)
 
-            ## Handling missing values
-            imputer = SimpleImputer(strategy='median')
-            X_imputed = pd.DataFrame(imputer.fit_transform(X), columns=X.columns)
+    ## Drop redundant columns:
+    DF.drop(columns=["ID", "AGE-GROUP", "SEX"], inplace=True)
 
-            ## Split the data into training and testing sets and standardize the features:
-            scaler = MinMaxScaler() 
-            if testset_ratio != 0:
-                X_train, X_test, y_train, y_test, id_train, id_test = train_test_split(
-                    X_imputed, y, ids, test_size=testset_ratio, random_state=seed)
-                
-                X_train_scaled = pd.DataFrame(scaler.fit_transform(X_train), columns=X_train.columns)
-                X_test_scaled = pd.DataFrame(scaler.transform(X_test), columns=X_test.columns)
-            else:
-                X_train, y_train, id_train = X_imputed, y, ids
-                X_train_scaled = pd.DataFrame(scaler.fit_transform(X_train), columns=X_train.columns)
-                X_test_scaled, y_test, id_test = pd.DataFrame(), pd.Series(), pd.Series()
+    ## Drop and "BASIC_INFO_" columns except "BASIC_INFO_AGE":
+    DF.drop(columns=[ col for col in DF.columns if (( col.startswith("BASIC_") ) and ( col not in ["BASIC_INFO_AGE", "BASIC_INFO_SEX"] ))], inplace=True)
+    
+    ## Fill missing values:
+    target_col = "AGE-GROUP_SEX"
+    target_classes = list(DF[target_col].unique())
+    DF_imputed_list = []
+    # N_per_group = 0 if N_per_group is None else N_per_group
+    for t in target_classes:
+        sub_DF = DF[DF[target_col] == t]
+        sub_X = sub_DF.drop(columns=[target_col])
+        imputer = SimpleImputer(strategy="median")
+        sub_DF_imputed = pd.DataFrame(imputer.fit_transform(sub_X), columns=sub_X.columns)
+        sub_DF_imputed[target_col] = sub_DF[target_col].reset_index(drop=True)
+        DF_imputed_list.append(sub_DF_imputed)
+        # if (balancing_method == "SMOTE") and (len(sub_DF_imputed) > N_per_group): 
+        #     N_per_group = len(sub_DF_imputed)
+        # elif (balancing_method == "sampling" | balancing_method == "bootstrap") and (len(sub_DF_imputed) < N_per_group):
+        #     N_per_group = len(sub_DF_imputed)
+    DF_imputed = pd.concat(DF_imputed_list)
 
-            preprocessed_grouped_datasets[group_name] = {
-                "X_train": X_train_scaled, 
-                "X_test": X_test_scaled, 
-                "y_train": y_train, 
-                "y_test": y_test, 
-                "id_train": id_train.reset_index(drop=True), 
-                "id_test": id_test.reset_index(drop=True)
-            }
+    ## Make balanced datasets:    
+    if balancing_method == "SMOTE":
+        sampler = SMOTE(
+            sampling_strategy={ t: N_per_group for t in target_classes }, 
+            random_state=seed
+        )
+    elif balancing_method == "sampling":
+        sampler = RandomUnderSampler(
+            sampling_strategy={ t: N_per_group for t in target_classes }, 
+            random_state=seed
+        ) 
+    elif balancing_method == "bootstrap":
+        sampler = RandomUnderSampler(
+            sampling_strategy={ t: N_per_group for t in target_classes }, 
+            random_state=seed, 
+            replacement=True
+        ) 
+    X_resampled, y_resampled = sampler.fit_resample(
+        X=DF_imputed.drop(columns=[target_col]), 
+        y=DF_imputed[target_col]
+    )
 
-    return preprocessed_grouped_datasets
+    ## Merge back with target variable and create ID column:
+    DF_balanced = pd.merge(
+        pd.DataFrame({target_col: y_resampled}), X_resampled, 
+        left_index=True, right_index=True
+    )
+    DF_balanced["ID"] = [ f"sub-{x:04d}" for x in DF_balanced.index ]
 
-def feature_selection(X, y, model_name="LassoCV", explained_ratio=0.9, nfold=5, seed=42):
+    return target_col, DF_balanced
+
+def preprocess_grouped_dataset(X, y, ids, testset_ratio, seed):
+    '''
+    Fill missing values, split into training and testing sets, and feature scale the grouped dataset.
+    
+    Inputs:
+    - X (pd.DataFrame): Feature matrix
+    - y (pd.Series): Target variable
+    - ids (pd.Series): IDs of participants
+    - testset_ratio (float): The ratio of testing set to the whole dataset
+    - seed (int): Random seed
+    
+    Return:
+    - (dict): A dictionary of train-test splited data, storing 
+              the standardized feature values, age, and ID numbers of participants.
+    '''
+    ## Fill missing values:
+    imputer = SimpleImputer(strategy="median")
+    X_imputed = pd.DataFrame(imputer.fit_transform(X), columns=X.columns)
+    
+    ## Split into training and testing sets, and then apply feature scaling:
+    scaler = MinMaxScaler()
+    if testset_ratio != 0:
+        X_train, X_test, y_train, y_test, id_train, id_test = train_test_split(
+            X, y, ids, test_size=testset_ratio, random_state=seed)
+        X_train_scaled = pd.DataFrame(scaler.fit_transform(X_train), columns=X_train.columns)
+        X_test_scaled = pd.DataFrame(scaler.transform(X_test), columns=X_test.columns)
+    else:
+        X_train, y_train, id_train = X_imputed, y, ids
+        X_train_scaled = pd.DataFrame(scaler.fit_transform(X_train), columns=X_train.columns)
+        X_test_scaled, y_test, id_test = pd.DataFrame(), pd.Series(), pd.Series()
+
+    return {
+        "X_train": X_train_scaled, 
+        "X_test": X_test_scaled, 
+        "y_train": y_train, 
+        "y_test": y_test, 
+        "id_train": id_train.reset_index(drop=True), 
+        "id_test": id_test.reset_index(drop=True)
+    }
+
+def feature_selection(X, y, model_name, explained_ratio, seed, nfold=5):
     '''
     Inputs:
     - X (pd.DataFrame): Feature matrix.
@@ -249,7 +338,7 @@ def feature_selection(X, y, model_name="LassoCV", explained_ratio=0.9, nfold=5, 
 
     return list(ranked_selected_features)
 
-def optimize_hyperparameters(trial, X, y, model_name, seed=42): 
+def optimize_hyperparameters(trial, X, y, model_name, seed): 
     '''
     Inputs:
     - trial (optuna.trial.Trial)
@@ -319,7 +408,7 @@ def optimize_hyperparameters(trial, X, y, model_name, seed=42):
 
     return np.mean(mae_scores)
 
-def train_and_evaluate(X, y, model_names, seed=42, optimize_trials=50):
+def train_and_evaluate(X, y, model_names, seed, optimize_trials=50):
     '''
     Inputs:
     - X (pd.DataFrame)  : Feature matrix.
@@ -341,7 +430,7 @@ def train_and_evaluate(X, y, model_names, seed=42, optimize_trials=50):
             sampler=optuna.samplers.RandomSampler(seed=seed)
         )
         study.optimize(
-            lambda trial: optimize_hyperparameters(trial, X, y, model_name), 
+            lambda trial: optimize_hyperparameters(trial, X, y, model_name, seed), 
             n_trials=optimize_trials, 
             show_progress_bar=True
         )
@@ -390,13 +479,13 @@ def generate_correction_ref(age, pad, age_groups, age_breaks):
         the mean and standard deviation of PAD for each age group.
     '''
     ## Create a DataFrame containing the actual age and PAD values:
-    df = pd.DataFrame({"Age": age, "PAD": pad})
+    DF = pd.DataFrame({"Age": age, "PAD": pad})
 
     ## Assign age labels based on the given age bin edges:
-    df["Group"] = pd.cut(df["Age"], bins=age_breaks, labels=age_groups)
+    DF["Group"] = pd.cut(DF["Age"], bins=age_breaks, labels=age_groups)
 
     ## Calculate the mean and standard deviation of PAD for each age group:
-    correction_ref = df.groupby("Group", observed=True)["PAD"].agg(['mean', 'std']).reset_index()
+    correction_ref = DF.groupby("Group", observed=True)["PAD"].agg(['mean', 'std']).reset_index()
     
     return correction_ref.rename(columns={"mean": "PAD_mean", "std": "PAD_std"})  
 
@@ -451,30 +540,56 @@ def convert_np_types(obj):
     else:
         return obj
 
-## Main program =================================================================
+## Main: ==============================================================================
 
 def main():
-
-## Initialiation ----------------------------------------------------------------
-
+    ## Setup config and constant objects:
     config = Config()
     constant = Constants()
 
+    ## Create output folder if it doesn't exist:
     if not os.path.exists(config.out_folder):
         os.makedirs(config.out_folder)
 
+    ## Setup logging file:
     logging.basicConfig(
         level=logging.INFO, 
         format='%(asctime)s - %(levelname)s - %(message)s', 
         filename=config.logging_outpath
     ) # https://zx7978123.medium.com/python-logging-%E6%97%A5%E8%AA%8C%E7%AE%A1%E7%90%86%E6%95%99%E5%AD%B8-60be0a1a6005
     
-    ## Define the labels and boundaries of age groups and age correction groups:
+    ## Define the random seed:
+    if args.seed is None:
+        seed = np.random.randint(0, 10000)
+    else:
+        seed = args.seed
+
+    ## Define the sampling method and number of participants per group:
+    if args.upsample:
+        balancing_method = "SMOTE"
+    elif args.downsample:
+        balancing_method = "downsample"
+    elif args.bootstrap:
+        balancing_method = "bootstrap"
+    else:
+        balancing_method = None
+        N_per_group = None
+
+    if balancing_method is not None:
+        if args.sample_size is None:
+            N_per_group = constant.N_per_group[balancing_method]
+        else:
+            N_per_group = args.sample_size
+
+    ## Define the labels and boundaries of age groups:
     age_bin_labels = list(constant.age_groups[config.age_method].keys())
     age_boundaries = list(constant.age_groups[config.age_method].values()) 
+
+    ## Define the labels and boundaries for age correction:
     pad_age_groups = list(constant.age_groups[config.pad_method].keys())
     pad_age_breaks = [ x for x, _ in list(constant.age_groups[config.pad_method].values()) ] + [ np.inf ]
 
+    ## Revise the mapping to include all domains and approachs, if specified:
     if args.without_domain_approach:
         logging.info("Domain approach is not used for feature selection.")
         constant.domain_approach_mapping = {
@@ -488,6 +603,9 @@ def main():
     desc = {
         "DataVersion": config.data_file_path, 
         "InclusionVersion": config.inclusion_file_path, 
+        "DataBalancingMethod": balancing_method, 
+        "NumPerGroup": N_per_group,
+        "Seed": seed, 
         "SexSeparated": config.sep_sex, 
         "AgeGroups": age_bin_labels, 
         "IgnoreFirstGroups": args.ignore, 
@@ -520,22 +638,67 @@ def main():
     
 ## STEP-1. Load data, split into groups, and preprocess -------------------------------------------------------
 
-    preprocessed_grouped_datasets = load_and_preprocess_data(
+    ## Load the raw dataset:
+    DF = load_and_merge_datasets(
         data_file_path=config.data_file_path, 
-        inclusion_file_path=config.inclusion_file_path, 
-        age_boundaries=age_boundaries, 
-        age_bin_labels=age_bin_labels, 
-        sep_sex=config.sep_sex, 
-        testset_ratio=config.testset_ratio
+        inclusion_file_path=config.inclusion_file_path
     )
+
+    ## Make balanced datasets if specified:
+    if balancing_method is not None:
+        target_col, DF_balanced = make_balanced_dataset(
+            DF=copy.deepcopy(DF), 
+            balancing_method=balancing_method, 
+            age_bin_dict=constant.age_groups["wais_8_seg"], 
+            N_per_group=N_per_group, 
+            seed=seed
+        )
+        DF_balanced.to_csv(config.balanced_data_outpath, index=False)
+        DF_balanced.drop(columns=[target_col], inplace=True)
+    else:
+        DF_balanced = DF
+
+    ## Divide the dataset into groups and define their labels:
+    if args.sep_sex:
+        logging.info("Separating data according to participants' age ranges and genders.")
+        sub_DF_list = [
+            DF_balanced[(DF_balanced["BASIC_INFO_AGE"].between(lb, ub)) & (DF_balanced["BASIC_INFO_SEX"] == sex)] 
+            for (lb, ub), sex in list(product(age_boundaries, [1, 2]))
+        ]
+        sub_DF_labels = [ f"{age_group}_{sex}" for age_group, sex in list(product(age_bin_labels, ["M", "F"])) ] 
+    else:
+        logging.info("Separating data according to participants' age ranges.")
+        sub_DF_list = [
+            DF_balanced[DF_balanced["BASIC_INFO_AGE"].between(lb, ub)] 
+            for lb, ub in age_boundaries
+        ]
+        sub_DF_labels = age_bin_labels
+
+    ## Separately preprocess different data subsets: 
+    preprocessed_data_dicts = {}
+
+    for group_name, sub_DF in zip(sub_DF_labels, sub_DF_list):
+
+        if sub_DF.empty:
+            preprocessed_data_dicts[group_name] = None
+        else:
+            sub_DF = sub_DF.reset_index(drop=True)
+            preprocessed_data_dicts[group_name] = preprocess_grouped_dataset(
+                X=sub_DF.drop(columns=["ID", "BASIC_INFO_AGE"]), 
+                y=sub_DF["BASIC_INFO_AGE"], 
+                ids=sub_DF["ID"], 
+                testset_ratio=config.testset_ratio, 
+                seed=seed
+            ) # a dictionary of train-test splited data, storing 
+              # the standardized feature values, age, and ID numbers of participants.
 
 ## STEP-2. Feature selection -----------------------------------------------------------------------------------
 
     iter = 0 # iteration counter for skipping
 
-    for group_name, group_data in preprocessed_grouped_datasets.items():
+    for group_name, data_dict in preprocessed_data_dicts.items():
 
-        if group_data is None: 
+        if data_dict is None: 
             logging.warning(f"Unable to process data for group '{group_name}'.")
             record_if_failed.append(f"Entire {group_name}.")
             continue
@@ -557,7 +720,7 @@ def main():
                         iter += 1
 
                         included_features = [ # filter the features based on the domain and approach
-                            col for col in group_data["X_train"].columns
+                            col for col in data_dict["X_train"].columns
                             if any( domain in col for domain in ori_content["domains"] )
                             and any( app in col for app in ori_content["approaches"] )
                             and "RESTING" not in col
@@ -573,15 +736,16 @@ def main():
 
                         else: 
                             selected_features = feature_selection(
-                                X=group_data["X_train"].loc[:, included_features], 
-                                y=group_data["y_train"], 
+                                X=data_dict["X_train"].loc[:, included_features], 
+                                y=data_dict["y_train"], 
                                 model_name=config.feature_selection_model, 
-                                explained_ratio=config.explained_ratio
+                                explained_ratio=config.explained_ratio, 
+                                seed=seed
                             )
 
 ## STEP-3. Find the best model and save its parameters -------------------------------------------------------
 
-                            X_train_selected = group_data["X_train"].loc[:, selected_features]
+                            X_train_selected = data_dict["X_train"].loc[:, selected_features]
 
                             if X_train_selected.empty: 
                                 logging.warning(f"After feature selection, there are no available features for orientation '{ori_name}' in group '{group_name}'.")
@@ -591,8 +755,9 @@ def main():
                             else:                    
                                 results = train_and_evaluate(
                                     X=X_train_selected, 
-                                    y=group_data["y_train"], 
-                                    model_names=constant.model_names
+                                    y=data_dict["y_train"], 
+                                    model_names=constant.model_names, 
+                                    seed=seed
                                 ) # Including ...
                                     # the mean and standard deviation of MAE scores, ...
                                     # the best model, and the best hyperparameters.
@@ -628,15 +793,15 @@ def main():
                         with open(os.path.join(previous_path, saved_model), 'rb') as f:
                             best_model = pickle.load(f)
                         
-                        X_train_selected = group_data["X_train"].loc[:, selected_features]
+                        X_train_selected = data_dict["X_train"].loc[:, selected_features]
                         
 ## STEP-4. Generate age-correction reference table -----------------------------------------------------------
 
                     y_pred_train = best_model.predict(X_train_selected)
-                    pad_train = y_pred_train - group_data["y_train"]
+                    pad_train = y_pred_train - data_dict["y_train"]
                             
                     correction_ref = generate_correction_ref(
-                        age=group_data["y_train"], 
+                        age=data_dict["y_train"], 
                         pad=pad_train, 
                         age_groups=pad_age_groups, 
                         age_breaks=pad_age_breaks
@@ -644,24 +809,24 @@ def main():
 
 ## STEP-5. Apply the model, apply age-correction, and save the results ----------------------------------------
                             
-                    if group_data["X_test"].empty: # apply the model to the training set
+                    if data_dict["X_test"].empty: # apply the model to the training set
                         corrected_y_pred_train = apply_age_correction(
                             predictions=y_pred_train, 
-                            true_ages=group_data["y_train"], 
+                            true_ages=data_dict["y_train"], 
                             correction_ref=correction_ref, 
                             age_groups=pad_age_groups, 
                             age_breaks=pad_age_breaks
                         )
-                        corrected_y_pred_train = pd.Series(corrected_y_pred_train, index=group_data["y_train"].index)
-                        padac_train = corrected_y_pred_train - group_data["y_train"]
+                        corrected_y_pred_train = pd.Series(corrected_y_pred_train, index=data_dict["y_train"].index)
+                        padac_train = corrected_y_pred_train - data_dict["y_train"]
 
                         save_results = {
                             "Model": best_model_name, 
                             "MeanTrainMAE": mean_train_mae, 
-                            "NumberOfSubjs": len(group_data["id_train"]), 
-                            "SubjID": list(group_data["id_train"]), 
+                            "NumberOfSubjs": len(data_dict["id_train"]), 
+                            "SubjID": list(data_dict["id_train"]), 
                             "Note": "Train and test sets are the same.", 
-                            "Age": list(group_data["y_train"]), 
+                            "Age": list(data_dict["y_train"]), 
                             "PredictedAge": list(y_pred_train), 
                             "PredictedAgeDifference": list(pad_train), 
                             "CorrectedPAD": list(padac_train), 
@@ -671,28 +836,28 @@ def main():
                             "FeatureNames": selected_features, 
                         }
                     else:
-                        X_test_selected = group_data["X_test"].loc[:, selected_features]                       
+                        X_test_selected = data_dict["X_test"].loc[:, selected_features]                       
                         y_pred_test = best_model.predict(X_test_selected)
-                        y_pred_test = pd.Series(y_pred_test, index=group_data["y_test"].index)
-                        pad = y_pred_test - group_data["y_test"]
+                        y_pred_test = pd.Series(y_pred_test, index=data_dict["y_test"].index)
+                        pad = y_pred_test - data_dict["y_test"]
                         corrected_y_pred_test = apply_age_correction(
                             predictions=y_pred_test, 
-                            true_ages=group_data["y_test"], 
+                            true_ages=data_dict["y_test"], 
                             correction_ref=correction_ref, 
                             age_groups=pad_age_groups, 
                             age_breaks=pad_age_breaks
                         )
-                        corrected_y_pred_test = pd.Series(corrected_y_pred_test, index=group_data["y_test"].index)
-                        padac = corrected_y_pred_test - group_data["y_test"]
+                        corrected_y_pred_test = pd.Series(corrected_y_pred_test, index=data_dict["y_test"].index)
+                        padac = corrected_y_pred_test - data_dict["y_test"]
 
                         save_results = {
                             "Model": best_model_name, 
                             "MeanTrainMAE": mean_train_mae, 
-                            "NumberOfTraining": len(group_data["id_train"]), 
-                            "TrainingSubjID": list(group_data["id_train"]), 
-                            "NumberOfTesting": len(group_data["id_test"]), 
-                            "TestingSubjID": list(group_data["id_test"]), 
-                            "Age": list(group_data["y_test"]), 
+                            "NumberOfTraining": len(data_dict["id_train"]), 
+                            "TrainingSubjID": list(data_dict["id_train"]), 
+                            "NumberOfTesting": len(data_dict["id_test"]), 
+                            "TestingSubjID": list(data_dict["id_test"]), 
+                            "Age": list(data_dict["y_test"]), 
                             "PredictedAge": list(y_pred_test), 
                             "PredictedAgeDifference": list(pad), 
                             "CorrectedPAD": list(padac), 

@@ -30,10 +30,6 @@ parser = argparse.ArgumentParser(
         '[table] model types and feature numbers.csv'.
     2) A table listing the medians and standard deviations of ages for each participant group:
         '[table] data median & std.csv'.
-    2+) If down-sampling (-ds) or bootstrapping (-bs) is specified, a folder named 
-      '{sampling_method} (N={args.sample_size}; seed={seed})' will be created, 
-      and a similar table will be generated after down-sampling or bootstrapping: 
-        '[table] balanced data median & std.csv'.
     3) A bar plot comparing PAD values for different models:
         '[barplot] PAD values.png'.
     4) Matrices of pairwise correlations between PAD values for models trainied on 
@@ -55,14 +51,6 @@ parser = argparse.ArgumentParser(
 )
 parser.add_argument("-f", "--folder", type=str, required=True, 
                     help="The folder name of the model outputs.")
-parser.add_argument("-ds", "--downsample", action="store_true", default=False, 
-                    help="Down-sample the data without replacement.")
-parser.add_argument("-bs", "--bootstrap", action="store_true", default=False, 
-                    help="Down-sample the data with replacement (bootstrapping).")
-parser.add_argument("-n", "--sample_size", type=int, default=50, 
-                    help="The number of participants to down-sample to.")
-parser.add_argument("-s", "--seed", type=int, default=None, 
-                    help="The random seed for downsampling or bootstrapping.")
 parser.add_argument("-pad", "--use_pad", action="store_true", default=False,
                     help="Use PAD values that have not been corrected for age.")
 parser.add_argument("-o", "--overwrite", action="store_true", default=False, 
@@ -71,7 +59,7 @@ parser.add_argument("-pa", "--p_adjust", action="store_true", default=False,
                     help="Use adjusted p-values for pairwise correlations.")
 args = parser.parse_args()
 
-## Configuration class: ---------------------------------------------------------------
+## Classes: ---------------------------------------------------------------------------
 
 class Config:
     def __init__(self):
@@ -108,7 +96,7 @@ class Description:
             }
         }   
 
-## Load parameters: -------------------------------------------------------------------
+## Functions: -------------------------------------------------------------------------
 
 def load_description(config, desc):
     '''
@@ -144,7 +132,6 @@ def load_description(config, desc):
 
     return desc
 
-## Load data: -------------------------------------------------------------------------
 
 def load_data(config, desc,selected_cols):
     '''
@@ -190,7 +177,6 @@ def load_data(config, desc,selected_cols):
 
     return DF, selected_features
 
-## Function: --------------------------------------------------------------------------
 
 def save_model_info(DF, label_cols, output_path, overwrite=False):
     '''
@@ -211,7 +197,6 @@ def save_model_info(DF, label_cols, output_path, overwrite=False):
         model_info.to_csv(output_path)
         print(f"\nModel types and feature numbers are saved to:\n{output_path}")
 
-## Function: --------------------------------------------------------------------------
 
 def save_discriptive_table(DF, output_path):
     '''
@@ -234,102 +219,18 @@ def save_discriptive_table(DF, output_path):
 
     return part_DF, stats_table
 
-## Function: --------------------------------------------------------------------------
 
-def make_balanced_dataframe(part_DF, stats_table, seed, output_path, 
-    iters_n=1000, med_diff_good=0.1, std_diff_good=0.5, alpha=0.5):
-    '''
-    Down-sample or bootstrap the data to make a balanced DataFrame
-    where the median and STD of all sub-datas are similar, 
-    and save the statistics to a .csv table.
-    <returns>:
-    - balanced_part_DF: Balanced DataFrame.
-    '''
-    target_med = stats_table.groupby("AgeGroup")["median"].mean()
-    target_std = stats_table["std"].mean()
-    sampled_df_list = []
-
-    for (sex, age_group), group_data in part_DF.groupby(["Sex", "AgeGroup"]):
-        best_sample, best_score = None, np.inf
-        weights = np.ones(len(group_data))
-    
-        for _ in range(iters_n):
-            current_is_good = 0
-            if weights.max() != weights.min(): # normalize weights
-                weights = (
-                    (weights - weights.min()) / 
-                    (weights.max() - weights.min())
-                )
-            sampled_df = group_data.sample(
-                n=args.sample_size, 
-                replace=args.bootstrap,  
-                random_state=seed, 
-                weights=weights / weights.sum()
-            )
-    
-            ## Adjust weights in accordance to the current median:
-            current_med = np.median(sampled_df["Age"].values)
-            med_diff = current_med - target_med[age_group]
-
-            if abs(med_diff) < med_diff_good:
-                current_is_good += 1
-            elif med_diff > 0: # increase the probability of sampling in lower-value areas if current median is too high
-                weights[group_data["Age"] <= target_med[age_group]] *= 1 + alpha
-            else: 
-                weights[group_data["Age"] >= target_med[age_group]] *= 1 + alpha
-            
-            ## Adjust weights in accordance to the current standard deviation:
-            current_std = np.std(sampled_df["Age"].values)
-            std_diff = current_std - target_std
-
-            if abs(std_diff) < std_diff_good:
-                current_is_good += 1
-            elif std_diff > 0: # decrease weight in proportion to distance if current std is too large
-                weights -= alpha * abs(group_data["Age"].values - target_med[age_group]) 
-            else: 
-                weights += alpha * abs(group_data["Age"].values - target_med[age_group])
-            
-            ## Choose the best sample based on the score:
-            score = (
-                (abs(med_diff) / target_med[age_group]) + 
-                (abs(std_diff) / target_std)
-            )
-            if current_is_good == 2: # stop if the current sample is good enough
-                best_sample = sampled_df
-                break
-            elif score < best_score:
-                best_sample = sampled_df
-                best_score = score
-    
-        sampled_df_list.append(best_sample)
-    
-    balanced_part_DF = pd.concat(
-        sampled_df_list, ignore_index=True
-    )
-    balanced_stats_table = (
-        balanced_part_DF
-        .groupby(["Sex", "AgeGroup"])["Age"]
-        .agg(["count", "median", "std"])
-        .reset_index()
-    )
-    balanced_stats_table.to_csv(output_path, index=False)
-    print(f"\nThe median and std of balanced data are saved to:\n{output_path}")
-
-    return balanced_part_DF
-
-## Function: --------------------------------------------------------------------------
-
-def modify_DF(used_DF, config, desc):
+def modify_DF(DF, config, desc):
     '''
     Modify the DataFrame and transform it to long format.
     <returns>:
     - DF_long: DataFrame in long format.
     '''
-    used_DF["SID"] = used_DF["SubjID"].map(lambda x: x.replace("sub-0", ""))
-    used_DF["PAD"] = np.abs(used_DF["PredictedAgeDifference"])
-    used_DF["PAD_ac"] = np.abs(used_DF["CorrectedPAD"])
+    DF["SID"] = DF["SubjID"].map(lambda x: x.replace("sub-0", ""))
+    DF["PAD"] = np.abs(DF["PredictedAgeDifference"])
+    DF["PAD_ac"] = np.abs(DF["CorrectedPAD"])
 
-    DF_long = (used_DF
+    DF_long = (DF
         .loc[:, ["SID", "Age"] + desc.label_cols + ["Type", "PAD", "PAD_ac"]]
         .melt(
             id_vars = ["SID", "Age"] + desc.label_cols + ["Type"], 
@@ -348,7 +249,6 @@ def modify_DF(used_DF, config, desc):
 
     return DF_long
 
-## Function: --------------------------------------------------------------------------
 
 def plot_PAD_bars(DF_long, x_lab, output_path, overwrite=False):
     '''
@@ -368,7 +268,6 @@ def plot_PAD_bars(DF_long, x_lab, output_path, overwrite=False):
         print(f"\nBar plot of the PAD values is saved to:\n{output_path}")
         plt.close()
 
-## Function set: ----------------------------------------------------------------------
 
 def formatted_r(x, y):
     r, p = pearsonr(x, y, alternative='two-sided')
@@ -414,7 +313,6 @@ def plot_cormat(sub_df_wide, ori_types, output_path, overwrite=False,
         print(f"\nCorrelation matrix is saved to:\n{output_path}")
         plt.close()
 
-## Function: --------------------------------------------------------------------------
 
 def pairwise_corr(sub_df_dict, excel_file, overwrite=False):
     '''
@@ -444,7 +342,6 @@ def pairwise_corr(sub_df_dict, excel_file, overwrite=False):
 
     return corr_DF
 
-## Function set: ----------------------------------------------------------------------
 
 def formatted_p(p):
     if p < .001:
@@ -495,7 +392,6 @@ def plot_corr_scatter(corr_DF, sub_df, group_name, t1, t2, p_apply, output_path,
         plt.close()
         print(f"\nCorrelation plot is saved to:\n{output_path}")
 
-## Function: --------------------------------------------------------------------------
 
 def make_feature_DF(ori_name, feature_list, domain_approach_mapping):
     '''
@@ -543,7 +439,6 @@ def make_feature_DF(ori_name, feature_list, domain_approach_mapping):
     
     return feature_DF
 
-## Function: --------------------------------------------------------------------------
 
 def plot_feature_sunbursts(feature_DF_dict, fig_title, subplot_annots, output_path, 
                            overwrite=False, ncol=None, nrow=None):
@@ -590,7 +485,7 @@ def plot_feature_sunbursts(feature_DF_dict, fig_title, subplot_annots, output_pa
         plt.close()
         print(f"\nSunburst plot is saved to:\n{output_path}")
         
-## Main function: ---------------------------------------------------------------------
+## Main: ------------------------------------------------------------------------------
 
 def main():
     config = Config()
@@ -618,38 +513,14 @@ def main():
     part_DF, stats_table = save_discriptive_table(
         DF, os.path.join(config.output_folder, config.disc_table_filename)
     )
-
-    ## Down-sample or bootstrap the data if specified:
-    if args.downsample or args.bootstrap:
-        sampling_method = "down-sampling" if args.downsample else "bootstrapping"
-        if args.seed is not None:
-            seed = args.seed
-        else:
-            seed = np.random.randint(0, 10000)
-        sub_folder = os.path.join(
-            config.output_folder, f"{sampling_method} (N={args.sample_size}; seed={seed})")
-        if not os.path.exists(sub_folder):
-            os.makedirs(sub_folder)
-        balanced_DF = make_balanced_dataframe(
-            part_DF, stats_table, seed, 
-            os.path.join(sub_folder, config.balanced_disc_table_fn)
-        )
-        if desc.sep_sex:
-            merge_on = [desc.sid_name, "Age", "Sex", "AgeGroup"]
-        else:
-            merge_on = [desc.sid_name, "Age", "AgeGroup"]
-        used_DF = balanced_DF.merge(DF, on=merge_on, how="left")
-    else:
-        used_DF = DF
-        sub_folder = config.output_folder
-
+    
     ## Modify DataFrame and transform it to long format:
-    DF_long = modify_DF(used_DF, config, desc)
+    DF_long = modify_DF(DF, config, desc)
     
     ## Plot PAD bars: 
     x_lab = "AgeSex" if desc.sep_sex else "AgeGroup"
     plot_PAD_bars(
-        DF_long, x_lab, os.path.join(sub_folder, config.barplot_filename), 
+        DF_long, x_lab, os.path.join(config.output_folder, config.barplot_filename), 
         overwrite=args.overwrite
     )
     
@@ -683,14 +554,14 @@ def main():
         ## Plot correlation matrices:
         plot_cormat(
             sub_df_wide, set(DF_long["Type"]), os.path.join(
-                sub_folder, config.cormat_fn_template.replace("GroupName", group_name)),
+                config.output_folder, config.cormat_fn_template.replace("GroupName", group_name)),
             figsize=(3, 3) if len(desc.feature_orientations) <= 3 else (4, 4),
             overwrite=args.overwrite
         )
         
     ## Calculate pairwise correlations (save to different sheets in an .xlsx file):
     corr_DF = pairwise_corr(
-        sub_df_dict, os.path.join(sub_folder, config.corr_table_filename), 
+        sub_df_dict, os.path.join(config.output_folder, config.corr_table_filename), 
         overwrite=args.overwrite
     )
 
@@ -701,7 +572,7 @@ def main():
         for t1, t2 in [("BEH", "FUN"), ("BEH", "STR"), ("FUN", "STR")]:
             plot_corr_scatter(
                 corr_DF, sub_df, group_name, t1, t2, p_apply, 
-                os.path.join(sub_folder, config.scatter_fn_template.replace("GroupName", group_name).replace("Type1", t1).replace("Type2", t2)), 
+                os.path.join(config.output_folder, config.scatter_fn_template.replace("GroupName", group_name).replace("Type1", t1).replace("Type2", t2)), 
                 overwrite=args.overwrite
             )
     
@@ -734,7 +605,7 @@ def main():
         ## One set of sunburst charts per feature type:
         plot_feature_sunbursts(
             feature_DF_dict, f"{ori_name[:3]}", subplot_annots, os.path.join(
-                sub_folder, config.sunburst_fn_template.replace("FeatureType", ori_name[:3])),
+                config.output_folder, config.sunburst_fn_template.replace("FeatureType", ori_name[:3])),
             overwrite=args.overwrite
         )
 
