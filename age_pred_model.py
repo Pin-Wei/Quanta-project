@@ -30,9 +30,9 @@ import json
 parser = argparse.ArgumentParser(description="")
 ## How to split data into groups:
 parser.add_argument("-age", "--age_method", type=int, default=0, 
-                    help="The method to define age groups. Options: 0 (cut_at_40), 1 (wais_8_seg).")
-parser.add_argument("-sex", "--sep_sex", action="store_true", default=False, 
-                    help="Whether to separate the data by gender. (default: False).")
+                    help="The method to define age groups. (0: 'cut_at_40', 1: 'wais_8_seg'; default: 0).")
+parser.add_argument("-sex", "--by_gender", type=int, default=1, 
+                    help="Whether to separate the data by gender. (0: False, 1: True; default: 1).")
 ## Balancing data such that all groups have the same number of participants:
 parser.add_argument("-u", "--upsample", action="store_true", default=False, 
                     help="Up-sample the data using SMOTE.")
@@ -67,8 +67,9 @@ class Config:
     def __init__(self):
         self.data_file_path = os.path.join("rawdata", "DATA_ses-01_2024-12-09.csv")
         self.inclusion_file_path = os.path.join("rawdata", "InclusionList_ses-01.csv")
+        # self.syndata_file_path = os.path.join("syndata", "SMOGN_wais-8_60.csv")
         self.age_method = ["cut_at_40", "wais_8_seg"][args.age_method]
-        self.sep_sex = args.sep_sex
+        self.by_gender = [False, True][args.by_gender]
         self.testset_ratio = args.testset_ratio
         self.feature_selection_model = ["LassoCV", "RF", "XGBR"][args.feature_selection_model]
         self.explained_ratio = args.explained_ratio        
@@ -214,9 +215,10 @@ def make_balanced_dataset(DF, balancing_method, age_bin_dict, N_per_group, seed)
         DF_imputed_list.append(sub_DF_imputed)
         # if (balancing_method == "SMOTE") and (len(sub_DF_imputed) > N_per_group): 
         #     N_per_group = len(sub_DF_imputed)
-        # elif (balancing_method == "sampling" | balancing_method == "bootstrap") and (len(sub_DF_imputed) < N_per_group):
+        # elif (balancing_method == "downsample" | balancing_method == "bootstrap") and (len(sub_DF_imputed) < N_per_group):
         #     N_per_group = len(sub_DF_imputed)
     DF_imputed = pd.concat(DF_imputed_list)
+    DF_imputed.reset_index(drop=True, inplace=True)
 
     ## Make balanced datasets:    
     if balancing_method == "SMOTE":
@@ -224,10 +226,11 @@ def make_balanced_dataset(DF, balancing_method, age_bin_dict, N_per_group, seed)
             sampling_strategy={ t: N_per_group for t in target_classes }, 
             random_state=seed
         )
-    elif balancing_method == "sampling":
+    elif balancing_method == "downsample":
         sampler = RandomUnderSampler(
             sampling_strategy={ t: N_per_group for t in target_classes }, 
-            random_state=seed
+            random_state=seed, 
+            replacement=False
         ) 
     elif balancing_method == "bootstrap":
         sampler = RandomUnderSampler(
@@ -245,7 +248,7 @@ def make_balanced_dataset(DF, balancing_method, age_bin_dict, N_per_group, seed)
         pd.DataFrame({target_col: y_resampled}), X_resampled, 
         left_index=True, right_index=True
     )
-    DF_balanced["ID"] = [ f"sub-{x:04d}" for x in DF_balanced.index ]
+    DF_balanced.insert(0, "ID", [ f"sub-{x:04d}" for x in DF_balanced.index ])
 
     return target_col, DF_balanced
 
@@ -606,7 +609,7 @@ def main():
         "DataBalancingMethod": balancing_method, 
         "NumPerGroup": N_per_group,
         "Seed": seed, 
-        "SexSeparated": config.sep_sex, 
+        "SexSeparated": config.by_gender, 
         "AgeGroups": age_bin_labels, 
         "IgnoreFirstGroups": args.ignore, 
         "CorrectionAgeGroups": pad_age_groups, 
@@ -659,7 +662,7 @@ def main():
         DF_balanced = DF
 
     ## Divide the dataset into groups and define their labels:
-    if args.sep_sex:
+    if args.by_gender:
         logging.info("Separating data according to participants' age ranges and genders.")
         sub_DF_list = [
             DF_balanced[(DF_balanced["BASIC_INFO_AGE"].between(lb, ub)) & (DF_balanced["BASIC_INFO_SEX"] == sex)] 

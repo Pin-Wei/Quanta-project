@@ -1,5 +1,7 @@
 #!/usr/bin/python
 
+# python gen_derivatives.py -f FOLDER_NAME
+
 import os
 import json
 import argparse
@@ -53,6 +55,10 @@ parser.add_argument("-f", "--folder", type=str, required=True,
                     help="The folder name of the model outputs.")
 parser.add_argument("-pad", "--use_pad", action="store_true", default=False,
                     help="Use PAD values that have not been corrected for age.")
+parser.add_argument("-b", "--bootstrap", action="store_true", default=False, 
+                    help="Model was trained on bootstrapped data.")
+parser.add_argument("-na", "--ignore_all", action="store_true", default=False,
+                    help="Ignore 'All' feature orientations.")
 parser.add_argument("-o", "--overwrite", action="store_true", default=False, 
                     help="Overwrite if the output files already exist.")
 parser.add_argument("-pa", "--p_adjust", action="store_true", default=False,
@@ -126,6 +132,8 @@ def load_description(config, desc):
 
     ## Used feature orientations (Options: ["STRUCTURE", "BEH", "FUNCTIONAL", "ALL"]):
     desc.feature_orientations = desc_json["FeatureOrientations"] 
+    if args.ignore_all:
+        desc.feature_orientations = ["STRUCTURE", "BEH", "FUNCTIONAL"]
 
     ## If testset ratio is 0, then the data was not split into training and testing sets:
     desc.sid_name = "SubjID" if int(desc_json["TestsetRatio"]) == 0 else "TestingSubjID"
@@ -523,6 +531,12 @@ def main():
         DF_long, x_lab, os.path.join(config.output_folder, config.barplot_filename), 
         overwrite=args.overwrite
     )
+    if args.ignore_all:
+        fn = config.barplot_filename.replace(".png", " (ignore 'All').png")
+        plot_PAD_bars(
+            DF_long, x_lab, os.path.join(config.output_folder, fn), 
+            overwrite=True
+        )
     
     ## Specify PAD type:
     pad_type = "PAD" if args.use_pad else "PAD_ac"
@@ -583,7 +597,7 @@ def main():
     )
 
     ## Make a dataframe with hierachical labels for selected features:
-    for ori_name in desc.domain_approach_mapping.keys():        
+    for ori_name in desc.feature_orientations:                
 
         ## One dataframe per group:
         feature_DF_dict = {
