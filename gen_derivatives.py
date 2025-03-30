@@ -1,6 +1,6 @@
 #!/usr/bin/python
 
-# python gen_derivatives.py -f FOLDER_NAME
+# python gen_derivatives.py -f FOLDER_NAME [-pad] [-b] [-na] [-o] [-pa]
 
 import os
 import json
@@ -57,7 +57,7 @@ parser.add_argument("-pad", "--use_pad", action="store_true", default=False,
                     help="Use PAD values that have not been corrected for age.")
 parser.add_argument("-b", "--bootstrap", action="store_true", default=False, 
                     help="Model was trained on bootstrapped data.")
-parser.add_argument("-na", "--ignore_all", action="store_true", default=False,
+parser.add_argument("-ia", "--ignore_all", action="store_true", default=False,
                     help="Ignore 'All' feature orientations.")
 parser.add_argument("-o", "--overwrite", action="store_true", default=False, 
                     help="Overwrite if the output files already exist.")
@@ -136,7 +136,7 @@ def load_description(config, desc):
         desc.feature_orientations = ["STRUCTURE", "BEH", "FUNCTIONAL"]
 
     ## If testset ratio is 0, then the data was not split into training and testing sets:
-    desc.sid_name = "SubjID" if int(desc_json["TestsetRatio"]) == 0 else "TestingSubjID"
+    desc.sid_name = "SubjID" if desc_json["TestsetRatio"] == 0 else "TestingSubjID"
 
     return desc
 
@@ -206,16 +206,16 @@ def save_model_info(DF, label_cols, output_path, overwrite=False):
         print(f"\nModel types and feature numbers are saved to:\n{output_path}")
 
 
-def save_discriptive_table(DF, output_path):
+def save_discriptive_table(DF, desc, output_path):
     '''
     Save the median and standard deviation of the data to a .csv table.
     <returns>:
     - part_DF: DataFrame with unique subjects.
     - stats_table: Table with median and standard deviation of the data.
-    '''
+    '''    
     part_DF = (DF
-        .loc[:, ["SubjID", "Age", "Sex", "AgeGroup"]]
-        .drop_duplicates("SubjID")
+        .loc[:, [desc.sid_name, "Age", "Sex", "AgeGroup"]]
+        .drop_duplicates(desc.sid_name)
     )
     stats_table = (part_DF
         .groupby(["Sex", "AgeGroup"])["Age"]
@@ -234,7 +234,7 @@ def modify_DF(DF, config, desc):
     <returns>:
     - DF_long: DataFrame in long format.
     '''
-    DF["SID"] = DF["SubjID"].map(lambda x: x.replace("sub-0", ""))
+    DF["SID"] = DF[desc.sid_name].map(lambda x: x.replace("sub-0", ""))
     DF["PAD"] = np.abs(DF["PredictedAgeDifference"])
     DF["PAD_ac"] = np.abs(DF["CorrectedPAD"])
 
@@ -519,7 +519,7 @@ def main():
 
     ## Aggregate medians and STDs of ages for each participant group (save to a table):
     part_DF, stats_table = save_discriptive_table(
-        DF, os.path.join(config.output_folder, config.disc_table_filename)
+        DF, desc, os.path.join(config.output_folder, config.disc_table_filename)
     )
     
     ## Modify DataFrame and transform it to long format:
@@ -566,12 +566,18 @@ def main():
         sub_df_dict[group_name] = sub_df_wide
 
         ## Plot correlation matrices:
+        fn = config.cormat_fn_template.replace("GroupName", group_name)
         plot_cormat(
-            sub_df_wide, set(DF_long["Type"]), os.path.join(
-                config.output_folder, config.cormat_fn_template.replace("GroupName", group_name)),
+            sub_df_wide, set(DF_long["Type"]), os.path.join(config.output_folder, fn), 
             figsize=(3, 3) if len(desc.feature_orientations) <= 3 else (4, 4),
             overwrite=args.overwrite
         )
+        if args.ignore_all:
+            fn2 = fn.replace(".png", " (ignore 'All').png")
+            plot_cormat(
+                sub_df_wide, set(DF_long["Type"]), os.path.join(config.output_folder, fn2),
+                figsize=(3, 3), overwrite=True
+            )
         
     ## Calculate pairwise correlations (save to different sheets in an .xlsx file):
     corr_DF = pairwise_corr(

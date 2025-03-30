@@ -1,5 +1,7 @@
 #!/usr/bin/python
 
+# python age_pred_model.py [-age] [-sex] [-u] [-d] [-b] [-n] [-tsr] [-iam] [-oam] [-fsm] [-epr] [-pmf] [-i] [-s]
+
 import os
 import argparse
 import logging
@@ -9,7 +11,7 @@ import pandas as pd
 from datetime import datetime
 from itertools import product
 import copy
-from imblearn.over_sampling import SMOTE # ADASYN 
+from imblearn.over_sampling import SMOTENC 
 from imblearn.under_sampling import RandomUnderSampler
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import MinMaxScaler
@@ -29,13 +31,13 @@ import json
 
 parser = argparse.ArgumentParser(description="")
 ## How to split data into groups:
-parser.add_argument("-age", "--age_method", type=int, default=0, 
-                    help="The method to define age groups. (0: 'cut_at_40', 1: 'wais_8_seg'; default: 0).")
+parser.add_argument("-age", "--age_method", type=int, default=1, 
+                    help="The method to define age groups. (0: 'cut_at_40', 1: 'cut_44-45', 2: 'wais_8_seg'; default: 1).")
 parser.add_argument("-sex", "--by_gender", type=int, default=1, 
                     help="Whether to separate the data by gender. (0: False, 1: True; default: 1).")
 ## Balancing data such that all groups have the same number of participants:
 parser.add_argument("-u", "--upsample", action="store_true", default=False, 
-                    help="Up-sample the data using SMOTE.")
+                    help="Up-sample the data using SMOTENC.")
 parser.add_argument("-d", "--downsample", action="store_true", default=False, 
                     help="Down-sample the data without replacement.")
 parser.add_argument("-b", "--bootstrap", action="store_true", default=False, 
@@ -43,11 +45,13 @@ parser.add_argument("-b", "--bootstrap", action="store_true", default=False,
 parser.add_argument("-n", "--sample_size", type=int, default=None, 
                     help="The number of participants to up- or down-sample to.")
 ## Split data into training and testing sets:
-parser.add_argument("-tsr", "--testset_ratio", type=float, default=0.0, 
+parser.add_argument("-tsr", "--testset_ratio", type=float, default=0.3, 
                     help="The ratio of the testing set.")
 ## Feature selection:
-parser.add_argument("-wda", "--without_domain_approach", action="store_true", default=False, 
-                    help="Whether not to use domain approach for feature selection. (default: False).")
+parser.add_argument("-iam", "--include_all_mappings", action="store_true", default=False, 
+                    help="Include 'All' domain-approach mappings for feature selection. (default: False).")
+parser.add_argument("-oam", "--only_all_mapping", action="store_true", default=False, 
+                    help="Include only 'All' domain-approach mappings for feature selection. (default: False).")
 parser.add_argument("-fsm", "--feature_selection_model", type=int, default=0, 
                     help="The model to use for feature selection. Options: 0 (LassoCV), 1 (RF), 2 (XGBR).")
 parser.add_argument("-epr", "--explained_ratio", type=float, default=0.9, 
@@ -67,8 +71,8 @@ class Config:
     def __init__(self):
         self.data_file_path = os.path.join("rawdata", "DATA_ses-01_2024-12-09.csv")
         self.inclusion_file_path = os.path.join("rawdata", "InclusionList_ses-01.csv")
-        # self.syndata_file_path = os.path.join("syndata", "SMOGN_wais-8_60.csv")
-        self.age_method = ["cut_at_40", "wais_8_seg"][args.age_method]
+        # self.syndata_file_path = os.path.join("syndata", "SMOTENC_wais-8_60.csv")
+        self.age_method = ["cut_at_40", "cut_44-45", "wais_8_seg"][args.age_method]
         self.by_gender = [False, True][args.by_gender]
         self.testset_ratio = args.testset_ratio
         self.feature_selection_model = ["LassoCV", "RF", "XGBR"][args.feature_selection_model]
@@ -76,7 +80,7 @@ class Config:
         self.pad_method = ["wais_8_seg", "every_5_yrs"][0]
         self.out_folder = os.path.join("outputs", datetime.today().strftime('%Y-%m-%d_%H.%M.%S'))
         self.description_outpath = os.path.join(self.out_folder, "description.json")
-        self.balanced_data_outpath = os.path.join(self.out_folder, "balanced_data.csv")
+        self.preprocessed_data_outpath = os.path.join(self.out_folder, "preprocessed_data.csv")
         self.logging_outpath = os.path.join(self.out_folder, "log.txt")
         self.failure_record_outpath = os.path.join(self.out_folder, "failure_record.txt")
         self.results_outpath_template = os.path.join(self.out_folder, "results_groupname_oriname.json")
@@ -89,6 +93,10 @@ class Constants:
             "cut_at_40": {
                 "le-40" : ( 0, 40),    # less than or equal to
                 "ge-41" : (41, np.inf) # greater than or equal to
+            }, 
+            "cut_44-45": {
+                "le-44" : ( 0, 44),
+                "ge-45" : (45, np.inf) 
             }, 
             "wais_8_seg": {
                 "le-24": ( 0, 24), 
@@ -141,7 +149,7 @@ class Constants:
         ]
         ## The number of participants in each balanced group:
         self.N_per_group = {
-            "SMOTE": 60, 
+            "SMOTENC": 60, 
             "downsample": 15, 
             "bootstrap": 15
         }
@@ -180,8 +188,8 @@ def make_balanced_dataset(DF, balancing_method, age_bin_dict, N_per_group, seed)
     '''
     Make balanced datasets using specified balancing methods, including:
     
-    OverSampling using 'SMOTE' (Synthetic Minority Oversampling Technique)
-    - see: https://imbalanced-learn.org/stable/references/generated/imblearn.over_sampling.SMOTE.html#imblearn.over_sampling.SMOTE.fit_resample
+    OverSampling using 'SMOTENC' (Synthetic Minority Oversampling Technique)
+    - see: https://imbalanced-learn.org/stable/references/generated/imblearn.over_sampling.SMOTENC.html#imblearn.over_sampling.SMOTENC.fit_resample
     
     UnderSampling using 'RandomUnderSampler' with (bootstrap) or without replacement (downsample)
     - see: https://imbalanced-learn.org/stable/references/generated/imblearn.under_sampling.RandomUnderSampler.html#imblearn.under_sampling.RandomUnderSampler
@@ -189,7 +197,7 @@ def make_balanced_dataset(DF, balancing_method, age_bin_dict, N_per_group, seed)
     ## Assign "AGE-GROUP_SEX" labels:
     DF["AGE-GROUP"] = pd.cut(
         x=DF["BASIC_INFO_AGE"], 
-        bins=[ x for x, _ in list(age_bin_dict.values()) ] + [ np.inf ], 
+        bins=[ 0 ] + [ x for _, x in list(age_bin_dict.values()) ], 
         labels=list(age_bin_dict.keys())
     )
     DF["SEX"] = DF["BASIC_INFO_SEX"].map({1: "M", 2: "F"})
@@ -213,7 +221,7 @@ def make_balanced_dataset(DF, balancing_method, age_bin_dict, N_per_group, seed)
         sub_DF_imputed = pd.DataFrame(imputer.fit_transform(sub_X), columns=sub_X.columns)
         sub_DF_imputed[target_col] = sub_DF[target_col].reset_index(drop=True)
         DF_imputed_list.append(sub_DF_imputed)
-        # if (balancing_method == "SMOTE") and (len(sub_DF_imputed) > N_per_group): 
+        # if (balancing_method == "SMOTENC") and (len(sub_DF_imputed) > N_per_group): 
         #     N_per_group = len(sub_DF_imputed)
         # elif (balancing_method == "downsample" | balancing_method == "bootstrap") and (len(sub_DF_imputed) < N_per_group):
         #     N_per_group = len(sub_DF_imputed)
@@ -221,8 +229,9 @@ def make_balanced_dataset(DF, balancing_method, age_bin_dict, N_per_group, seed)
     DF_imputed.reset_index(drop=True, inplace=True)
 
     ## Make balanced datasets:    
-    if balancing_method == "SMOTE":
-        sampler = SMOTE(
+    if balancing_method == "SMOTENC":
+        sampler = SMOTENC(
+            categorical_features=["BASIC_INFO_AGE", "BASIC_INFO_SEX"], 
             sampling_strategy={ t: N_per_group for t in target_classes }, 
             random_state=seed
         )
@@ -275,7 +284,7 @@ def preprocess_grouped_dataset(X, y, ids, testset_ratio, seed):
     scaler = MinMaxScaler()
     if testset_ratio != 0:
         X_train, X_test, y_train, y_test, id_train, id_test = train_test_split(
-            X, y, ids, test_size=testset_ratio, random_state=seed)
+            X_imputed, y, ids, test_size=testset_ratio, random_state=seed)
         X_train_scaled = pd.DataFrame(scaler.fit_transform(X_train), columns=X_train.columns)
         X_test_scaled = pd.DataFrame(scaler.transform(X_test), columns=X_test.columns)
     else:
@@ -567,9 +576,9 @@ def main():
     else:
         seed = args.seed
 
-    ## Define the sampling method and number of participants per group:
+    ## Define the sampling method and number of participants per balanced group:
     if args.upsample:
-        balancing_method = "SMOTE"
+        balancing_method = "SMOTENC"
     elif args.downsample:
         balancing_method = "downsample"
     elif args.bootstrap:
@@ -590,11 +599,17 @@ def main():
 
     ## Define the labels and boundaries for age correction:
     pad_age_groups = list(constant.age_groups[config.pad_method].keys())
-    pad_age_breaks = [ x for x, _ in list(constant.age_groups[config.pad_method].values()) ] + [ np.inf ]
+    pad_age_breaks = [ 0 ] + [ x for _, x in list(constant.age_groups[config.pad_method].values()) ] 
 
-    ## Revise the mapping to include all domains and approachs, if specified:
-    if args.without_domain_approach:
-        logging.info("Domain approach is not used for feature selection.")
+    ## Include (or only include) the 'ALL' domain-approach mapping, if specified:
+    if args.include_all_mappings:
+        logging.info("Include the 'ALL' domain-approach mapping.")
+        constant.domain_approach_mapping["ALL"] = {
+            "domains": ["STRUCTURE", "MOTOR", "MEMORY", "LANGUAGE"], 
+            "approaches": ["MRI", "BEH", "EEG"]
+        }
+    elif args.only_all_mapping:
+        logging.info("Only include the 'ALL' domain-approach mapping.")
         constant.domain_approach_mapping = {
             "ALL": {
                 "domains": ["STRUCTURE", "MOTOR", "MEMORY", "LANGUAGE"], 
@@ -607,7 +622,7 @@ def main():
         "DataVersion": config.data_file_path, 
         "InclusionVersion": config.inclusion_file_path, 
         "DataBalancingMethod": balancing_method, 
-        "NumPerGroup": N_per_group,
+        "NumPerBalancedGroup": N_per_group,
         "Seed": seed, 
         "SexSeparated": config.by_gender, 
         "AgeGroups": age_bin_labels, 
@@ -618,8 +633,7 @@ def main():
         "FeatureSelectionModel": config.feature_selection_model, 
         "FeatureExplainedRatio": config.explained_ratio, 
         "OptimizedModels": constant.model_names, 
-        "UsePretrainedModels": args.pretrained_model_folder, 
-        "WithoutDomainApproach": args.without_domain_approach
+        "UsePretrainedModels": args.pretrained_model_folder
     }
     desc = convert_np_types(desc)
 
@@ -656,7 +670,7 @@ def main():
             N_per_group=N_per_group, 
             seed=seed
         )
-        DF_balanced.to_csv(config.balanced_data_outpath, index=False)
+        # DF_balanced.to_csv(config.preprocessed_data_outpath, index=False)
         DF_balanced.drop(columns=[target_col], inplace=True)
     else:
         DF_balanced = DF
@@ -676,6 +690,9 @@ def main():
             for lb, ub in age_boundaries
         ]
         sub_DF_labels = age_bin_labels
+
+    ## Save the preprocessed dataset:
+    pd.concat(sub_DF_list).to_csv(config.preprocessed_data_outpath, index=False)
 
     ## Separately preprocess different data subsets: 
     preprocessed_data_dicts = {}
