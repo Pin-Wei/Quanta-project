@@ -261,6 +261,29 @@ def make_balanced_dataset(DF, balancing_method, age_bin_dict, N_per_group, seed)
 
     return target_col, DF_balanced
 
+def mark_synthetic_data(DF, DF_upsampled):
+    '''
+    Add a new column to mark whether the data is real or synthetic.
+    '''
+    ## Find the common NA-free columns between the two dataframes:
+    DF_nona = DF.dropna(axis=1)
+    nona_cols = list(DF_nona.columns)
+    common_nona_cols = [ x for x in nona_cols if x in DF_upsampled.columns ]
+    common_nona_cols.remove("ID")
+
+    ## Add a new column to mark whether the data is real or synthetic:
+    DF_upsampled.insert(1, "R_S", "Synthetic")
+    DF_real = (
+        DF_upsampled
+        .loc[:, common_nona_cols]
+        .reset_index()
+        .merge(DF.loc[:, common_nona_cols], how='inner', on=common_nona_cols)
+        .set_index('index')
+    )
+    DF_upsampled.loc[DF_real.index, "R_S"] = "Real"
+
+    return DF_upsampled
+
 def preprocess_grouped_dataset(X, y, ids, testset_ratio, seed):
     '''
     Fill missing values, split into training and testing sets, and feature scale the grouped dataset.
@@ -670,7 +693,6 @@ def main():
             N_per_group=N_per_group, 
             seed=seed
         )
-        # DF_balanced.to_csv(config.preprocessed_data_outpath, index=False)
         DF_balanced.drop(columns=[target_col], inplace=True)
     else:
         DF_balanced = DF
@@ -693,6 +715,11 @@ def main():
 
     ## Save the preprocessed dataset:
     pd.concat(sub_DF_list).to_csv(config.preprocessed_data_outpath, index=False)
+
+    if balancing_method == "SMOTENC":
+        fn = config.preprocessed_data_outpath.replace(".csv", " (marked).csv")
+        DF_marked = mark_synthetic_data(DF, DF_balanced)
+        DF_marked.to_csv(fn, index=False)
 
     ## Separately preprocess different data subsets: 
     preprocessed_data_dicts = {}

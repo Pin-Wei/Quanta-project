@@ -1,6 +1,6 @@
 #!/usr/bin/python
 
-# python gen_derivatives.py -f FOLDER_NAME [-pad] [-b] [-na] [-o] [-pa]
+# python gen_derivatives.py -f FOLDER_NAME 
 
 import os
 import json
@@ -72,14 +72,18 @@ class Config:
         self.folder = args.folder
         self.input_folder = os.path.join("outputs", self.folder)
         self.output_folder = os.path.join("derivatives", self.folder)
-        self.model_info_filename    = "[table] model types and feature numbers.csv"
-        self.disc_table_filename    = "[table] data median & std.csv"
-        self.balanced_disc_table_fn = "[table] balanced data median & std.csv"
-        self.barplot_filename       = "[barplot] PAD values.png"
-        self.cormat_fn_template     = "[cormat] GroupName.png"
-        self.corr_table_filename    = "[table] pairwise corr.xlsx"
-        self.scatter_fn_template    = "[scatter] GroupName (Type1 × Type2).png"
-        self.sunburst_fn_template   = "[pie] FeatureType.png"
+        ## Tables: 
+        self.model_info_filename     = "[table] model types and feature numbers.csv"
+        self.disc_table_filename     = "[table] median and std of ages.csv"
+        self.balanced_disc_table_fn  = "[table] median and std of ages after balancing.csv"
+        self.pad_corr_table_filename = "[table] pairwise correlations between PAD_ac.xlsx"
+        ## Figures: 
+        self.data_hist_fn_template   = "[hist] distributions of real and synthetic data in <GroupName>.png"
+        self.data_cormat_fn_template = "[cormat] between features in <GroupName>'s <S_or_R> data.png"
+        self.pad_barplot_filename    = "[bar] PAD values.png"
+        self.pad_cormat_fn_template  = "[cormat] between PAD_ac in <GroupName>.png"
+        self.pad_scatter_fn_template = "[scatter] between PAD_ac in <GroupName> (<Type1> × <Type2>).png"
+        self.sunburst_fn_template    = "[pie] <FeatureType>.png"
 
 class Description:
     def __init__(self):
@@ -136,12 +140,16 @@ def load_description(config, desc):
         desc.feature_orientations = ["STRUCTURE", "BEH", "FUNCTIONAL"]
 
     ## If testset ratio is 0, then the data was not split into training and testing sets:
-    desc.sid_name = "SubjID" if desc_json["TestsetRatio"] == 0 else "TestingSubjID"
+    desc.traintest = True if desc_json["TestsetRatio"] != 0 else False
+    desc.sid_name = "TestingSubjID" if desc.traintest else "SubjID"
+
+    ## Whether the data was synthetized:
+    desc.data_synthetized = True if desc_json["DataBalancingMethod"] == "SMOTENC" else False
 
     return desc
 
 
-def load_data(config, desc,selected_cols):
+def load_data(config, desc, selected_cols):
     '''
     Load the model results from the input folder.
     <returns>:
@@ -152,6 +160,7 @@ def load_data(config, desc,selected_cols):
 
     selected_result_list = []
     selected_features = { o: {} for o in desc.feature_orientations }
+    training_subj_infos = []
 
     for label in desc.label_list:
         if desc.sep_sex:
@@ -181,9 +190,89 @@ def load_data(config, desc,selected_cols):
 
                     selected_features[ori_name][group_name] = results["FeatureNames"]
 
-    DF = pd.concat(selected_result_list, ignore_index=True)
+        if desc.traintest:            
+            temp_DF = pd.DataFrame({
+                "SID": [ x.replace("sub-0", "") for x in results["TrainingSubjID"] ]
+            })
+            temp_DF["AgeGroup"] = age_group
+            training_subj_infos.append(temp_DF)
 
-    return DF, selected_features
+    DF = pd.concat(selected_result_list, ignore_index=True)
+    DF["SID"] = DF[desc.sid_name].map(lambda x: x.replace("sub-0", ""))
+    DF.drop(columns=[desc.sid_name], inplace=True)
+
+    if desc.traintest: 
+        training_subj_infos = pd.concat(training_subj_infos, ignore_index=True)
+        preprocessed_data = pd.read_csv(os.path.join(config.input_folder, "preprocessed_data.csv"))
+        all_subj_infos = (
+            preprocessed_data
+            .loc[:, ["ID", "BASIC_INFO_AGE", "BASIC_INFO_SEX"]]
+            .rename(columns={
+                "BASIC_INFO_AGE": "Age", 
+                "BASIC_INFO_SEX": "Sex"
+            })
+        )
+        all_subj_infos["Sex"] = all_subj_infos["Sex"].map({1: "M", 2: "F"})
+        all_subj_infos["SID"] = all_subj_infos["ID"].map(lambda x: x.replace("sub-0", ""))
+        all_subj_infos.drop(columns=["ID"], inplace=True)
+        DF_train_info = pd.merge(training_subj_infos, all_subj_infos, on="SID", how='inner')
+    else:
+        DF_train_info = None
+
+    return DF, selected_features, DF_train_info
+
+
+def plot_data_dist(DF_marked, selected_features, age_group, sex, output_path, 
+                   orientations=["STRUCTURE", "BEH", "FUNCTIONAL"],
+                   bins=30, density=False, alpha=0.8, overwrite=False):
+    '''
+    Plot data distribution for selected features to compare real and synthetic data.
+    <returns>:
+    - targ_col_list: List of target columns used for plotting.
+    '''
+    group_name = f"{age_group}_{sex}"
+    targ_col_list = []
+    DRAW_FIG = True if (not os.path.exists(output_path)) or overwrite else False
+
+    if DRAW_FIG: 
+        plt.style.use('seaborn-v0_8-white')
+        fig = plt.figure(figsize=(12, 10))
+        handles, labels = [], []
+    
+    for ori_idx, ori_name in enumerate(orientations):
+        for targ_idx in range(2):
+            targ_col = selected_features[ori_name][group_name][targ_idx]
+            targ_col_list.append(targ_col)
+
+            if DRAW_FIG: 
+                targ_vals_S = DF_marked.query(
+                    "R_S == 'Synthetic' & AGE_GROUP == @age_group & SEX == @sex"
+                )[targ_col]
+                targ_vals_R = DF_marked.query(
+                    "R_S == 'Real' & AGE_GROUP == @age_group & SEX == @sex"
+                )[targ_col]
+                
+                fig_idx = ori_idx * 2 + targ_idx + 1
+                ax = plt.subplot(len(orientations), 2, fig_idx)
+                ax.hist(
+                    [targ_vals_S, targ_vals_R], 
+                    bins=bins, density=density, 
+                    color=['#3399FF', '#FF9933'], alpha=alpha, 
+                    label=[f"S ({len(targ_vals_S)})", f"R ({len(targ_vals_R)})"]
+                )
+                ax.set_xlabel(targ_col, fontsize=12)
+                ax.set_ylabel("")
+                handles.append(ax.get_legend_handles_labels()[0])
+                labels = ax.get_legend_handles_labels()[1]
+    if DRAW_FIG: 
+        fig.suptitle(f"{age_group}, {sex}", fontsize=18)
+        plt.tight_layout()     
+        plt.figlegend(sum(handles, []), labels, bbox_to_anchor=(1.1, 0.55), fontsize=12)
+        plt.savefig(output_path, dpi=200, bbox_inches='tight')
+        plt.close()
+        print(f"\nDistribution plots is saved to:\n{output_path}")
+
+    return targ_col_list
 
 
 def save_model_info(DF, label_cols, output_path, overwrite=False):
@@ -206,35 +295,34 @@ def save_model_info(DF, label_cols, output_path, overwrite=False):
         print(f"\nModel types and feature numbers are saved to:\n{output_path}")
 
 
-def save_discriptive_table(DF, desc, output_path):
+def save_discriptive_table(DF, output_path, overwrite=False):
     '''
     Save the median and standard deviation of the data to a .csv table.
-    <returns>:
-    - part_DF: DataFrame with unique subjects.
-    - stats_table: Table with median and standard deviation of the data.
-    '''    
-    part_DF = (DF
-        .loc[:, [desc.sid_name, "Age", "Sex", "AgeGroup"]]
-        .drop_duplicates(desc.sid_name)
-    )
-    stats_table = (part_DF
-        .groupby(["Sex", "AgeGroup"])["Age"]
-        .agg(["count", "median", "std"])
-        .reset_index()
-    )
-    stats_table.to_csv(output_path, index=False)
-    print(f"\nData median and std are saved to:\n{output_path}")
+    # <previous returns>:
+    # - DF_info: DataFrame with unique subjects.
+    # - stats_table: Table with median and standard deviation of the data.
+    '''
+    if (not os.path.exists(output_path)) or overwrite:
+        DF_info = (DF
+            .loc[:, ["SID", "Age", "Sex", "AgeGroup"]]
+            .drop_duplicates("SID")
+        )
+        stats_table = (DF_info
+            .groupby(["Sex", "AgeGroup"])["Age"]
+            .agg(["count", "median", "std"])
+            .rename(columns = {"count": "N", "median": "Median", "std": "STD"})
+            .reset_index()
+        )
+        stats_table.to_csv(output_path, index=False)
+        print(f"\nData median and std are saved to:\n{output_path}")
 
-    return part_DF, stats_table
 
-
-def modify_DF(DF, config, desc):
+def modify_DF(DF, desc):
     '''
     Modify the DataFrame and transform it to long format.
     <returns>:
     - DF_long: DataFrame in long format.
     '''
-    DF["SID"] = DF[desc.sid_name].map(lambda x: x.replace("sub-0", ""))
     DF["PAD"] = np.abs(DF["PredictedAgeDifference"])
     DF["PAD_ac"] = np.abs(DF["CorrectedPAD"])
 
@@ -258,7 +346,7 @@ def modify_DF(DF, config, desc):
     return DF_long
 
 
-def plot_PAD_bars(DF_long, x_lab, output_path, overwrite=False):
+def plot_pad_bars(DF_long, x_lab, output_path, overwrite=False):
     '''
     Plot the PAD values.
     <no returns>
@@ -277,7 +365,46 @@ def plot_PAD_bars(DF_long, x_lab, output_path, overwrite=False):
         plt.close()
 
 
-def formatted_r(x, y):
+# def rename_cols(col_list):
+#     renamed_col_list = []
+
+#     for col in col_list:
+#         if "STRUCTURE" in col:
+#             col_name = "STR"
+#         elif "BEH" in col:
+#             col_name = "BEH"
+#         else:
+#             if "EEG" in col:
+#                 col_name = "EEG"
+#             elif "MEG" in col:
+#                 col_name = "MEG"
+#             elif "MRI" in col:
+#                 col_name = "fMRI"
+          
+#         if "WM" in col:
+#             col_name += " (WM)"
+#         elif "GM" in col:
+#             col_name += " (GM)"
+#         elif "MEMORY" in col:
+#             col_name += " (memory)"
+#         elif "MOTOR" in col:
+#             col_name += " (motor)"
+#         elif "LANGUAGE" in col:
+#             col_name += " (language)"
+
+#         renamed_col_list.append(col_name)
+
+#     return renamed_col_list
+
+
+def rename_cols(col_list):
+    renamed_col_list = []
+    for x, col in enumerate(col_list):
+        renamed_col_list.append(f"({col}) #{x+1}")
+    return renamed_col_list
+
+
+def format_r(x, y):
     r, p = pearsonr(x, y, alternative='two-sided')
     if p < .001:
         return f"{r:.2f}***"
@@ -288,8 +415,9 @@ def formatted_r(x, y):
     else:
         return f"{r:.2f}"
     
-def plot_cormat(sub_df_wide, ori_types, output_path, overwrite=False, 
-                font_scale=1.1, figsize=(3, 3), dpi=200):
+def plot_cormat(wide_DF, targ_cols, output_path, 
+                targ_col_names=None, xr=0, yr=0, 
+                overwrite=False, font_scale=1.1, figsize=(3, 3), dpi=200):
     '''
     Plot the correlation matrix for sub-dataframes.
     <no returns>
@@ -297,14 +425,14 @@ def plot_cormat(sub_df_wide, ori_types, output_path, overwrite=False,
     if (not os.path.exists(output_path)) or overwrite:
         sns.set_theme(style='white', font_scale=font_scale)
         fig, ax = plt.subplots(figsize=figsize, dpi=dpi) 
-        cormat = sub_df_wide.corr()
+        cormat = wide_DF.corr()
         mask = np.zeros_like(cormat)
         mask[np.triu_indices_from(mask)] = True
-        annot_mat = cormat.copy(deep=True)
+        annot_mat = cormat.copy(deep=True) # ensure that the columns are the same
         annot_mat = annot_mat.astype(object)
         annot_mat.iloc[:, :] = ""
-        for t1, t2 in itertools.combinations(ori_types, 2):
-            annot_mat.loc[t1, t2] = formatted_r(sub_df_wide[t1], sub_df_wide[t2])
+        for t1, t2 in itertools.combinations(targ_cols, 2):
+            annot_mat.loc[t1, t2] = format_r(wide_DF[t1], wide_DF[t2])
             annot_mat.loc[t2, t1] = annot_mat.loc[t1, t2] 
         sns.heatmap(
             cormat, mask=mask, # square=True, 
@@ -316,13 +444,17 @@ def plot_cormat(sub_df_wide, ori_types, output_path, overwrite=False,
         )
         ax.set_ylabel("")
         ax.set_xlabel("")
+        if targ_col_names is not None:
+            ax.set_yticklabels(targ_col_names, rotation=yr)
+            # ax.set_xticklabels(targ_col_names, rotation=xr)
+            ax.set_xticklabels([ f"#{x+1}" for x in range(len(targ_col_names)) ], rotation=xr)
         plt.tight_layout()
         plt.savefig(output_path)
         print(f"\nCorrelation matrix is saved to:\n{output_path}")
         plt.close()
 
 
-def pairwise_corr(sub_df_dict, excel_file, overwrite=False):
+def calc_pad_corr_table(sub_df_dict, excel_file, overwrite=False):
     '''
     Calculate pairwise correlations and save to an .xlsx file.
     <returns>:
@@ -351,7 +483,7 @@ def pairwise_corr(sub_df_dict, excel_file, overwrite=False):
     return corr_DF
 
 
-def formatted_p(p):
+def format_p(p):
     if p < .001:
         return "p < .001***"
     elif p < .01:
@@ -363,8 +495,8 @@ def formatted_p(p):
     else:
         return f"p = {p:.3f}".lstrip('0')
     
-def plot_corr_scatter(corr_DF, sub_df, group_name, t1, t2, p_apply, output_path, overwrite=False, 
-                      font_scale=1.2, figsize=(5, 5), dpi=500):
+def plot_pad_corr_scatter(corr_DF, sub_df, group_name, t1, t2, p_apply, output_path, 
+                          overwrite=False, font_scale=1.2, figsize=(5, 5), dpi=500):
     '''
     Plot the correlation scatter plot for sub-dataframes.
     <no returns>
@@ -392,7 +524,7 @@ def plot_corr_scatter(corr_DF, sub_df, group_name, t1, t2, p_apply, output_path,
         N = sub_corr_df["n"].iloc[0]
         r = sub_corr_df["r"].iloc[0]
         p = sub_corr_df[p_apply].iloc[0]
-        p_print = formatted_p(p).replace("p", "p-unc") if p_apply == "p-unc" else formatted_p(p)
+        p_print = format_p(p).replace("p", "p-unc") if p_apply == "p-unc" else format_p(p)
 
         plt.suptitle(f"r = {r:.2f}, {p_print}, N = {N:.0f}")
         plt.tight_layout()
@@ -508,7 +640,38 @@ def main():
         desc.sid_name, "Age", "PredictedAgeDifference", "CorrectedPAD", 
         "Model", "NumberOfFeatures"
     ]
-    DF, selected_features = load_data(config, desc, selected_cols)
+    DF, selected_features, DF_train_info = load_data(config, desc, selected_cols)
+
+    ## If the data was synthetized, load the marked data:
+    if desc.data_synthetized:
+        DF_marked = pd.read_csv(
+            os.path.join(config.input_folder, "preprocessed_data (marked).csv")
+        )
+        DF_marked["SEX"] = DF_marked["BASIC_INFO_SEX"].replace({1: "M", 2: "F"})
+        DF_marked["AGE_GROUP"] = pd.cut(DF_marked["BASIC_INFO_AGE"], bins=desc.age_breaks, labels=desc.age_group_labels)
+        
+        for label in desc.label_list:
+            age_group, sex = label
+
+            ## Compare the distribution between real and synthetic data for selected features:
+            fn = config.data_hist_fn_template.replace("<GroupName>", f"{age_group}_{sex}")
+            targ_col_list = plot_data_dist(
+                DF_marked, selected_features, age_group, sex, 
+                os.path.join(config.output_folder, fn)
+            )
+
+            ## Plot correlation matrices for selected features:
+            for S_or_R in ["Synthetic", "Real"]:
+                fn = config.data_cormat_fn_template.replace("<GroupName>", f"{age_group}_{sex}").replace("<S_or_R>", S_or_R)
+                plot_cormat(
+                    wide_DF=DF_marked.query("R_S == @S_or_R & AGE_GROUP == @age_group & SEX == @sex").loc[:, targ_col_list], 
+                    targ_cols=targ_col_list, 
+                    output_path=os.path.join(config.output_folder, fn), 
+                    targ_col_names=rename_cols(targ_col_list), 
+                    # targ_col_names=targ_col_list, 
+                    figsize=(12, 4), 
+                    overwrite=args.overwrite
+                )
 
     ## Aggregate model types and feature numbers (save to a table):
     save_model_info(
@@ -518,22 +681,29 @@ def main():
     )
 
     ## Aggregate medians and STDs of ages for each participant group (save to a table):
-    part_DF, stats_table = save_discriptive_table(
-        DF, desc, os.path.join(config.output_folder, config.disc_table_filename)
+    save_discriptive_table(
+        DF, os.path.join(config.output_folder, config.disc_table_filename), 
+        overwrite=args.overwrite
     )
     
+    if desc.traintest:
+        fn = config.disc_table_filename.replace(".csv", " (training set).csv")
+        save_discriptive_table(
+            DF_train_info, os.path.join(config.output_folder, fn)
+        )
+
     ## Modify DataFrame and transform it to long format:
-    DF_long = modify_DF(DF, config, desc)
+    DF_long = modify_DF(DF, desc)
     
     ## Plot PAD bars: 
     x_lab = "AgeSex" if desc.sep_sex else "AgeGroup"
-    plot_PAD_bars(
-        DF_long, x_lab, os.path.join(config.output_folder, config.barplot_filename), 
+    plot_pad_bars(
+        DF_long, x_lab, os.path.join(config.output_folder, config.pad_barplot_filename), 
         overwrite=args.overwrite
     )
     if args.ignore_all:
-        fn = config.barplot_filename.replace(".png", " (ignore 'All').png")
-        plot_PAD_bars(
+        fn = config.pad_barplot_filename.replace(".png", " (ignore 'All').png")
+        plot_pad_bars(
             DF_long, x_lab, os.path.join(config.output_folder, fn), 
             overwrite=True
         )
@@ -565,23 +735,29 @@ def main():
         )
         sub_df_dict[group_name] = sub_df_wide
 
-        ## Plot correlation matrices:
-        fn = config.cormat_fn_template.replace("GroupName", group_name)
+        ## Plot correlation matrices (without 'All' feature orientation):
+        fn = config.pad_cormat_fn_template.replace("<GroupName>", group_name)
         plot_cormat(
-            sub_df_wide, set(DF_long["Type"]), os.path.join(config.output_folder, fn), 
+            wide_DF=sub_df_wide, 
+            targ_cols=set(DF_long["Type"]), 
+            output_path=os.path.join(config.output_folder, fn), 
             figsize=(3, 3) if len(desc.feature_orientations) <= 3 else (4, 4),
             overwrite=args.overwrite
         )
+
+        ## Plot correlation matrices (with 'All' feature orientation):
         if args.ignore_all:
             fn2 = fn.replace(".png", " (ignore 'All').png")
             plot_cormat(
-                sub_df_wide, set(DF_long["Type"]), os.path.join(config.output_folder, fn2),
+                wide_DF=sub_df_wide, 
+                targ_cols=set(DF_long["Type"]), 
+                output_path=os.path.join(config.output_folder, fn2),
                 figsize=(3, 3), overwrite=True
             )
         
     ## Calculate pairwise correlations (save to different sheets in an .xlsx file):
-    corr_DF = pairwise_corr(
-        sub_df_dict, os.path.join(config.output_folder, config.corr_table_filename), 
+    corr_DF = calc_pad_corr_table(
+        sub_df_dict, os.path.join(config.output_folder, config.pad_corr_table_filename), 
         overwrite=args.overwrite
     )
 
@@ -590,9 +766,9 @@ def main():
 
     for group_name, sub_df in sub_df_dict.items():
         for t1, t2 in [("BEH", "FUN"), ("BEH", "STR"), ("FUN", "STR")]:
-            plot_corr_scatter(
+            plot_pad_corr_scatter(
                 corr_DF, sub_df, group_name, t1, t2, p_apply, 
-                os.path.join(config.output_folder, config.scatter_fn_template.replace("GroupName", group_name).replace("Type1", t1).replace("Type2", t2)), 
+                os.path.join(config.output_folder, config.pad_scatter_fn_template.replace("<GroupName>", group_name).replace("<Type1>", t1).replace("<Type2>", t2)), 
                 overwrite=args.overwrite
             )
     
@@ -625,7 +801,7 @@ def main():
         ## One set of sunburst charts per feature type:
         plot_feature_sunbursts(
             feature_DF_dict, f"{ori_name[:3]}", subplot_annots, os.path.join(
-                config.output_folder, config.sunburst_fn_template.replace("FeatureType", ori_name[:3])),
+                config.output_folder, config.sunburst_fn_template.replace("<FeatureType>", ori_name[:3])),
             overwrite=args.overwrite
         )
 
