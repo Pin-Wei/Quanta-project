@@ -35,6 +35,8 @@ parser.add_argument("-age", "--age_method", type=int, default=1,
                     help="The method to define age groups. (0: 'cut_at_40', 1: 'cut_44-45', 2: 'wais_8_seg'; default: 1).")
 parser.add_argument("-sex", "--by_gender", type=int, default=1, 
                     help="Whether to separate the data by gender. (0: False, 1: True; default: 1).")
+parser.add_argument("-upd", "--use_prepared_data", type=str, default=None, 
+                    help="File directory of the data to be used (.csv).")
 ## Balancing data such that all groups have the same number of participants:
 parser.add_argument("-u", "--upsample", action="store_true", default=False, 
                     help="Up-sample the data using SMOTENC.")
@@ -71,16 +73,20 @@ class Config:
     def __init__(self):
         self.data_file_path = os.path.join("rawdata", "DATA_ses-01_2024-12-09.csv")
         self.inclusion_file_path = os.path.join("rawdata", "InclusionList_ses-01.csv")
-        # self.syndata_file_path = os.path.join("syndata", "SMOTENC_wais-8_60.csv")
         self.age_method = ["cut_at_40", "cut_44-45", "wais_8_seg"][args.age_method]
         self.by_gender = [False, True][args.by_gender]
         self.testset_ratio = args.testset_ratio
         self.feature_selection_model = ["LassoCV", "RF", "XGBR"][args.feature_selection_model]
         self.explained_ratio = args.explained_ratio        
         self.pad_method = ["wais_8_seg", "every_5_yrs"][0]
-        self.out_folder = os.path.join("outputs", datetime.today().strftime('%Y-%m-%d_%H.%M.%S'))
+        if args.pretrained_model_folder is not None:
+            self.out_folder = os.path.join("outputs", f"{args.pretrained_model_folder}+")
+        elif args.seed is not None:
+            self.out_folder = os.path.join("outputs", f"{datetime.today().strftime('%Y-%m-%d')}_seed={args.seed}")
+        else:
+            self.out_folder = os.path.join("outputs", datetime.today().strftime('%Y-%m-%d_%H.%M.%S'))
         self.description_outpath = os.path.join(self.out_folder, "description.json")
-        self.preprocessed_data_outpath = os.path.join(self.out_folder, "preprocessed_data.csv")
+        self.prepared_data_outpath = os.path.join(self.out_folder, "prepared_data.csv")
         self.logging_outpath = os.path.join(self.out_folder, "log.txt")
         self.failure_record_outpath = os.path.join(self.out_folder, "failure_record.txt")
         self.results_outpath_template = os.path.join(self.out_folder, "results_groupname_oriname.json")
@@ -642,21 +648,22 @@ def main():
 
     ## Save the description of the current execution as a JSON file:
     desc = {
-        "DataVersion": config.data_file_path, 
-        "InclusionVersion": config.inclusion_file_path, 
-        "DataBalancingMethod": balancing_method, 
-        "NumPerBalancedGroup": N_per_group,
         "Seed": seed, 
+        "UsePreparedData": args.use_prepared_data, 
+        "RawDataVersion": config.data_file_path, 
+        "InclusionFileVersion": config.inclusion_file_path, 
+        "DataBalancingMethod": balancing_method, 
+        "NumPerBalancedGroup": N_per_group, 
         "SexSeparated": config.by_gender, 
         "AgeGroups": age_bin_labels, 
-        "IgnoreFirstGroups": args.ignore, 
-        "CorrectionAgeGroups": pad_age_groups, 
         "TestsetRatio": config.testset_ratio, 
+        "UsePretrainedModels": args.pretrained_model_folder, 
         "FeatureOrientations": list(constant.domain_approach_mapping.keys()),
         "FeatureSelectionModel": config.feature_selection_model, 
         "FeatureExplainedRatio": config.explained_ratio, 
-        "OptimizedModels": constant.model_names, 
-        "UsePretrainedModels": args.pretrained_model_folder
+        "IncludedOptimizationModels": constant.model_names, 
+        "SkippedIterationNum": args.ignore, 
+        "AgeCorrectionGroups": pad_age_groups
     }
     desc = convert_np_types(desc)
 
@@ -678,48 +685,55 @@ def main():
     
 ## STEP-1. Load data, split into groups, and preprocess -------------------------------------------------------
 
-    ## Load the raw dataset:
-    DF = load_and_merge_datasets(
-        data_file_path=config.data_file_path, 
-        inclusion_file_path=config.inclusion_file_path
-    )
+    if args.use_prepared_data:
+        logging.info("Loading prepared data...")
 
-    ## Make balanced datasets if specified:
-    if balancing_method is not None:
-        target_col, DF_balanced = make_balanced_dataset(
-            DF=copy.deepcopy(DF), 
-            balancing_method=balancing_method, 
-            age_bin_dict=constant.age_groups["wais_8_seg"], 
-            N_per_group=N_per_group, 
-            seed=seed
-        )
-        DF_balanced.drop(columns=[target_col], inplace=True)
+        ## Load the prepared dataset:
+        DF_prepared = pd.read_csv(args.use_prepared_data)
+
     else:
-        DF_balanced = DF
+        ## Load the raw dataset:
+        DF = load_and_merge_datasets(
+            data_file_path=config.data_file_path, 
+            inclusion_file_path=config.inclusion_file_path
+        )
+
+        ## Make balanced datasets if specified:
+        if balancing_method is not None:
+            target_col, DF_prepared = make_balanced_dataset(
+                DF=copy.deepcopy(DF), 
+                balancing_method=balancing_method, 
+                age_bin_dict=constant.age_groups["wais_8_seg"], 
+                N_per_group=N_per_group, 
+                seed=seed
+            )
+            DF_prepared.drop(columns=[target_col], inplace=True)
+
+            if balancing_method == "SMOTENC":
+                fn = config.prepared_data_outpath.replace(".csv", " (marked).csv")
+                DF_marked = mark_synthetic_data(DF, DF_prepared)
+                DF_marked.to_csv(fn, index=False)
+        else:
+            DF_prepared = DF
+
+        ## Save it to file:
+        DF_prepared.to_csv(config.prepared_data_outpath, index=False)
 
     ## Divide the dataset into groups and define their labels:
     if args.by_gender:
         logging.info("Separating data according to participants' age ranges and genders.")
         sub_DF_list = [
-            DF_balanced[(DF_balanced["BASIC_INFO_AGE"].between(lb, ub)) & (DF_balanced["BASIC_INFO_SEX"] == sex)] 
+            DF_prepared[(DF_prepared["BASIC_INFO_AGE"].between(lb, ub)) & (DF_prepared["BASIC_INFO_SEX"] == sex)] 
             for (lb, ub), sex in list(product(age_boundaries, [1, 2]))
         ]
         sub_DF_labels = [ f"{age_group}_{sex}" for age_group, sex in list(product(age_bin_labels, ["M", "F"])) ] 
     else:
         logging.info("Separating data according to participants' age ranges.")
         sub_DF_list = [
-            DF_balanced[DF_balanced["BASIC_INFO_AGE"].between(lb, ub)] 
+            DF_prepared[DF_prepared["BASIC_INFO_AGE"].between(lb, ub)] 
             for lb, ub in age_boundaries
         ]
         sub_DF_labels = age_bin_labels
-
-    ## Save the preprocessed dataset:
-    pd.concat(sub_DF_list).to_csv(config.preprocessed_data_outpath, index=False)
-
-    if balancing_method == "SMOTENC":
-        fn = config.preprocessed_data_outpath.replace(".csv", " (marked).csv")
-        DF_marked = mark_synthetic_data(DF, DF_balanced)
-        DF_marked.to_csv(fn, index=False)
 
     ## Separately preprocess different data subsets: 
     preprocessed_data_dicts = {}
@@ -727,8 +741,10 @@ def main():
     for group_name, sub_DF in zip(sub_DF_labels, sub_DF_list):
 
         if sub_DF.empty:
+            logging.warning(f"Data subset of the '{group_name}' group is empty.")
             preprocessed_data_dicts[group_name] = None
         else:
+            logging.info(f"Preprocessing data subset of the {group_name} group...")
             sub_DF = sub_DF.reset_index(drop=True)
             preprocessed_data_dicts[group_name] = preprocess_grouped_dataset(
                 X=sub_DF.drop(columns=["ID", "BASIC_INFO_AGE"]), 
@@ -746,7 +762,7 @@ def main():
     for group_name, data_dict in preprocessed_data_dicts.items():
 
         if data_dict is None: 
-            logging.warning(f"Unable to process data for group '{group_name}'.")
+            logging.warning(f"Unable to train models for group '{group_name}'.")
             record_if_failed.append(f"Entire {group_name}.")
             continue
 

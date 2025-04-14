@@ -55,8 +55,8 @@ parser.add_argument("-f", "--folder", type=str, required=True,
                     help="The folder name of the model outputs.")
 parser.add_argument("-pad", "--use_pad", action="store_true", default=False,
                     help="Use PAD values that have not been corrected for age.")
-parser.add_argument("-b", "--bootstrap", action="store_true", default=False, 
-                    help="Model was trained on bootstrapped data.")
+# parser.add_argument("-b", "--bootstrap", action="store_true", default=False, 
+#                     help="Model was trained on bootstrapped data.")
 parser.add_argument("-ia", "--ignore_all", action="store_true", default=False,
                     help="Ignore 'All' feature orientations.")
 parser.add_argument("-o", "--overwrite", action="store_true", default=False, 
@@ -323,8 +323,10 @@ def modify_DF(DF, desc):
     <returns>:
     - DF_long: DataFrame in long format.
     '''
-    DF["PAD"] = np.abs(DF["PredictedAgeDifference"])
-    DF["PAD_ac"] = np.abs(DF["CorrectedPAD"])
+    DF.rename(columns={
+        "PredictedAgeDifference": "PAD", 
+        "CorrectedPAD": "PAD_ac"
+    }, inplace=True)
 
     DF_long = (DF
         .loc[:, ["SID", "Age"] + desc.label_cols + ["Type", "PAD", "PAD_ac"]]
@@ -339,6 +341,8 @@ def modify_DF(DF, desc):
             "FUNCTIONAL": "FUN"
         })
     )
+    DF_long["PAD_abs_value"] = DF_long["PAD_value"].abs()
+
     DF_long = DF_long.sort_values(by=["Sex", "AgeGroup"], ascending=False)
     if desc.sep_sex:
         DF_long["AgeSex"] = DF_long["AgeGroup"] + "_" + DF_long["Sex"]
@@ -356,7 +360,7 @@ def plot_pad_bars(DF_long, x_lab, output_path, overwrite=False):
         sns.set_context("talk", font_scale=1.2)
         g = sns.catplot(
             data=DF_long, kind="bar",
-            x=x_lab, y="PAD_value", hue="PAD_type", col="Type", dodge=True, 
+            x=x_lab, y="PAD_abs_value", hue="PAD_type", col="Type", dodge=True, 
             errorbar="se", palette="dark", alpha=.6, height=6
         )
         g.set_axis_labels("", "PAD Value")
@@ -415,6 +419,7 @@ def format_r(x, y):
     else:
         return f"{r:.2f}"
     
+
 def plot_cormat(wide_DF, targ_cols, output_path, 
                 targ_col_names=None, xr=0, yr=0, 
                 overwrite=False, font_scale=1.1, figsize=(3, 3), dpi=200):
@@ -460,6 +465,8 @@ def calc_pad_corr_table(sub_df_dict, excel_file, overwrite=False):
     <returns>:
     - corr_DF: DataFrame with pairwise correlations.
     '''
+    if overwrite and os.path.exists(excel_file):
+        os.remove(excel_file)
     pw_corr_list = []
 
     for group_name, sub_df in sub_df_dict.items():
@@ -495,6 +502,7 @@ def format_p(p):
     else:
         return f"p = {p:.3f}".lstrip('0')
     
+
 def plot_pad_corr_scatter(corr_DF, sub_df, group_name, t1, t2, p_apply, output_path, 
                           overwrite=False, font_scale=1.2, figsize=(5, 5), dpi=500):
     '''
@@ -712,7 +720,8 @@ def main():
     pad_type = "PAD" if args.use_pad else "PAD_ac"
 
     ## Create an index column for pivoting:
-    if args.bootstrap or ("SID" not in DF_long.columns) or ("Age" not in DF_long.columns):
+    # if args.bootstrap or ("SID" not in DF_long.columns) or ("Age" not in DF_long.columns):
+    if ("SID" not in DF_long.columns) or ("Age" not in DF_long.columns):
         DF_long["idx"] = (
             DF_long
             .query("PAD_type == @pad_type")
