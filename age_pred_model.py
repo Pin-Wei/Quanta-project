@@ -32,9 +32,9 @@ import json
 parser = argparse.ArgumentParser(description="")
 ## How to split data into groups:
 parser.add_argument("-age", "--age_method", type=int, default=1, 
-                    help="The method to define age groups. (0: 'cut_at_40', 1: 'cut_44-45', 2: 'wais_8_seg'; default: 1).")
+                    help="The method to define age groups (0: 'cut_at_40', 1: 'cut_44-45', 2: 'wais_8_seg').")
 parser.add_argument("-sex", "--by_gender", type=int, default=1, 
-                    help="Whether to separate the data by gender. (0: False, 1: True; default: 1).")
+                    help="Whether to separate the data by gender (0: False, 1: True).")
 parser.add_argument("-upd", "--use_prepared_data", type=str, default=None, 
                     help="File directory of the data to be used (.csv).")
 ## Balancing data such that all groups have the same number of participants:
@@ -45,24 +45,26 @@ parser.add_argument("-d", "--downsample", action="store_true", default=False,
 parser.add_argument("-b", "--bootstrap", action="store_true", default=False, 
                     help="Down-sample the data with replacement (i.e., bootstrapping).")
 parser.add_argument("-n", "--sample_size", type=int, default=None, 
-                    help="The number of participants to up- or down-sample to.")
+                    help="The number of participants to up- or down-sample to. (if None, use the default number of participants per group set in constants.N_per_group).")
 ## Split data into training and testing sets:
 parser.add_argument("-tsr", "--testset_ratio", type=float, default=0.3, 
                     help="The ratio of the testing set.")
 ## Feature selection:
 parser.add_argument("-iam", "--include_all_mappings", action="store_true", default=False, 
-                    help="Include 'All' domain-approach mappings for feature selection. (default: False).")
+                    help="Include 'All' domain-approach mappings for feature selection.")
 parser.add_argument("-oam", "--only_all_mapping", action="store_true", default=False, 
-                    help="Include only 'All' domain-approach mappings for feature selection. (default: False).")
+                    help="Include only 'All' domain-approach mappings for feature selection.")
+parser.add_argument("-psf", "--preselected_feature_folder", type=str, default=None, 
+                    help="The folder where the result files (.json) containing the selected features are stored.")
 parser.add_argument("-fsm", "--feature_selection_model", type=int, default=0, 
-                    help="The model to use for feature selection. Options: 0 (LassoCV), 1 (RF), 2 (XGBR).")
+                    help="The model to use for feature selection (0: 'LassoCV', 1: 'RF', 2: 'XGBR').")
 parser.add_argument("-epr", "--explained_ratio", type=float, default=0.9, 
                     help="The variance to be explained by the selected features.")
 ## Model training:
 parser.add_argument("-pmf", "--pretrained_model_folder", type=str, default=None, 
-                    help="Folder containing the pre-trained model files (.pkl).")
+                    help="The folder where the pre-trained model files (.pkl) are stored.")
 parser.add_argument("-i", "--ignore", type=int, default=0, 
-                    help="Ignore the first N iterations (In case you might be interrupted and don't want to start from the beginning)ㄡ")
+                    help="Ignore the first N iterations (in case you might be interrupted by an error and don't want to start from the beginning).")
 parser.add_argument("-s", "--seed", type=int, default=None, 
                     help="The value used to initialize all random number generator.")
 args = parser.parse_args()
@@ -89,8 +91,8 @@ class Config:
         self.prepared_data_outpath = os.path.join(self.out_folder, "prepared_data.csv")
         self.logging_outpath = os.path.join(self.out_folder, "log.txt")
         self.failure_record_outpath = os.path.join(self.out_folder, "failure_record.txt")
-        self.results_outpath_template = os.path.join(self.out_folder, "results_groupname_oriname.json")
-        self.model_outpath_template = os.path.join(self.out_folder, "models_groupname_oriname_modeltype.pkl")
+        self.results_outpath_format = os.path.join(self.out_folder, "results_{}_{}.json")
+        self.model_outpath_format = os.path.join(self.out_folder, "models_{}_{}_{}.pkl")
 
 class Constants:
     def __init__(self):
@@ -168,11 +170,9 @@ def load_and_merge_datasets(data_file_path, inclusion_file_path):
     '''
     ## Load the main dataset:
     DF = pd.read_csv(data_file_path)
-    logging.info("Successfully loaded the main dataset.")
     
     ## Load the file marking whether a data has been collected from individual participants:
     inclusion_df = pd.read_csv(inclusion_file_path)
-    logging.info("Successfully loaded the inclusion table.")
 
     ## Only include participants with MRI data:
     inclusion_df = inclusion_df.query("MRI == 1")
@@ -277,18 +277,21 @@ def mark_synthetic_data(DF, DF_upsampled):
     common_nona_cols = [ x for x in nona_cols if x in DF_upsampled.columns ]
     common_nona_cols.remove("ID")
 
-    ## Add a new column to mark whether the data is real or synthetic:
-    DF_upsampled.insert(1, "R_S", "Synthetic")
-    DF_real = (
+    ## Use inner join on common_nona_cols to find real data:
+    DF_real = ( 
         DF_upsampled
         .loc[:, common_nona_cols]
         .reset_index()
         .merge(DF.loc[:, common_nona_cols], how='inner', on=common_nona_cols)
         .set_index('index')
     )
-    DF_upsampled.loc[DF_real.index, "R_S"] = "Real"
 
-    return DF_upsampled
+    ## Add a new column to mark whether the data is real or synthetic:
+    DF_marked = DF_upsampled.copy(deep=True) # avoid modifying the original dataframe
+    DF_marked.insert(1, "R_S", "Synthetic")
+    DF_marked.loc[DF_real.index, "R_S"] = "Real"
+
+    return DF_marked
 
 def preprocess_grouped_dataset(X, y, ids, testset_ratio, seed):
     '''
@@ -438,7 +441,7 @@ def optimize_hyperparameters(trial, X, y, model_name, seed):
     mae_scores = []
 
     for n_fold, (train_index, val_index) in enumerate(kf.split(X)):
-        logging.info(f"Parameter optimization for {model_name}, trial {trial.number}, fold {n_fold+1} ...")
+        print(f"Parameter optimization for {model_name}, trial {trial.number}, fold {n_fold+1} ...")
 
         if X.iloc[train_index].empty:
             return np.inf # If the training data is empty, return an error value
@@ -459,11 +462,12 @@ def train_and_evaluate(X, y, model_names, seed, optimize_trials=50):
     Return:
     - (dict): The evaluation results for each model, including:
         the mean and standard deviation of MAE scores, 
-        the best model, and the best hyperparameters.
+        and all included model with their best hyperparameters.
     '''
     results = {}
 
     for model_name in model_names:
+        logging.info(f"Optimizing hyperparameters for {model_name} ...")
 
         ## Initialize the model with the best hyperparameters:
         study = optuna.create_study(
@@ -475,7 +479,7 @@ def train_and_evaluate(X, y, model_names, seed, optimize_trials=50):
             n_trials=optimize_trials, 
             show_progress_bar=True
         )
-        logging.info(f"Parameter optimization for {model_name} is completed.")
+        logging.info("Parameter optimization is completed :-)")
 
         if model_name == "ElasticNet":
             best_model = ElasticNet(**study.best_params, random_state=seed)
@@ -593,6 +597,8 @@ def main():
         os.makedirs(config.out_folder)
 
     ## Setup logging file:
+    if os.path.exists(config.logging_outpath):
+        os.remove(config.logging_outpath)
     logging.basicConfig(
         level=logging.INFO, 
         format='%(asctime)s - %(levelname)s - %(message)s', 
@@ -658,41 +664,36 @@ def main():
         "AgeGroups": age_bin_labels, 
         "TestsetRatio": config.testset_ratio, 
         "UsePretrainedModels": args.pretrained_model_folder, 
+        "UsePreviouslySelectedFeatures": args.preselected_feature_folder, 
         "FeatureOrientations": list(constant.domain_approach_mapping.keys()),
         "FeatureSelectionModel": config.feature_selection_model, 
         "FeatureExplainedRatio": config.explained_ratio, 
-        "IncludedOptimizationModels": constant.model_names, 
+        "IncludedOptimizationModels": constant.model_names if args.preselected_feature_folder is None else "Depend on the previous results", 
         "SkippedIterationNum": args.ignore, 
         "AgeCorrectionGroups": pad_age_groups
     }
     desc = convert_np_types(desc)
-
     with open(config.description_outpath, 'w', encoding='utf-8') as f:
         json.dump(desc, f, ensure_ascii=False)
 
-    logging.info("The description of the current execution has been saved as a JSON file.")
+    logging.info("The description of the current execution is saved :-)")
 
     ## Copy the current Python script to the output folder:
     shutil.copyfile(
         src=os.path.abspath(__file__), 
         dst=os.path.join(config.out_folder, os.path.basename(__file__))
     )
-
-    logging.info("The current Python script has been copied to the output folder.")
+    logging.info("The current python script is copied to the output folder :-)")
 
     ## Record the failed processing to a text file:
     record_if_failed = [] 
     
-## STEP-1. Load data, split into groups, and preprocess -------------------------------------------------------
-
-    if args.use_prepared_data:
-        logging.info("Loading prepared data...")
-
-        ## Load the prepared dataset:
+    if args.use_prepared_data: # Use the prepared dataset
+        logging.info("Loading the prepared dataset ...")
         DF_prepared = pd.read_csv(args.use_prepared_data)
 
-    else:
-        ## Load the raw dataset:
+    else: # Load the raw dataset:
+        logging.info("Loading the raw dataset and merging it with the inclusion table ...")
         DF = load_and_merge_datasets(
             data_file_path=config.data_file_path, 
             inclusion_file_path=config.inclusion_file_path
@@ -700,6 +701,7 @@ def main():
 
         ## Make balanced datasets if specified:
         if balancing_method is not None:
+            logging.info(f"Making balanced datasets using '{balancing_method}' method ...")
             target_col, DF_prepared = make_balanced_dataset(
                 DF=copy.deepcopy(DF), 
                 balancing_method=balancing_method, 
@@ -721,14 +723,14 @@ def main():
 
     ## Divide the dataset into groups and define their labels:
     if args.by_gender:
-        logging.info("Separating data according to participants' age ranges and genders.")
+        logging.info("Separating data according to participants' age ranges and genders ...")
         sub_DF_list = [
             DF_prepared[(DF_prepared["BASIC_INFO_AGE"].between(lb, ub)) & (DF_prepared["BASIC_INFO_SEX"] == sex)] 
             for (lb, ub), sex in list(product(age_boundaries, [1, 2]))
         ]
         sub_DF_labels = [ f"{age_group}_{sex}" for age_group, sex in list(product(age_bin_labels, ["M", "F"])) ] 
     else:
-        logging.info("Separating data according to participants' age ranges.")
+        logging.info("Separating data according to participants' age ranges ...")
         sub_DF_list = [
             DF_prepared[DF_prepared["BASIC_INFO_AGE"].between(lb, ub)] 
             for lb, ub in age_boundaries
@@ -741,10 +743,11 @@ def main():
     for group_name, sub_DF in zip(sub_DF_labels, sub_DF_list):
 
         if sub_DF.empty:
-            logging.warning(f"Data subset of the '{group_name}' group is empty.")
+            logging.warning(f"Oops! Data subset of the '{group_name}' group is empty :-S")
             preprocessed_data_dicts[group_name] = None
+
         else:
-            logging.info(f"Preprocessing data subset of the {group_name} group...")
+            logging.info(f"Preprocessing data subset of the {group_name} group ...")
             sub_DF = sub_DF.reset_index(drop=True)
             preprocessed_data_dicts[group_name] = preprocess_grouped_dataset(
                 X=sub_DF.drop(columns=["ID", "BASIC_INFO_AGE"]), 
@@ -755,124 +758,138 @@ def main():
             ) # a dictionary of train-test splited data, storing 
               # the standardized feature values, age, and ID numbers of participants.
 
-## STEP-2. Feature selection -----------------------------------------------------------------------------------
-
+    logging.info("Preprocessing of all data subsets is completed.")
+    logging.info("Starting loop through all groups and orientations ...")
     iter = 0 # iteration counter for skipping
 
     for group_name, data_dict in preprocessed_data_dicts.items():
+        logging.info(f"Group: '{group_name}'")
 
         if data_dict is None: 
-            logging.warning(f"Unable to train models for group '{group_name}'.")
+            logging.warning("Data subset of the current group is empty!!")
+            logging.info("Unable to train models, skipping ...")
             record_if_failed.append(f"Entire {group_name}.")
             continue
 
         else: 
             for ori_name, ori_content in constant.domain_approach_mapping.items():
+                logging.info(f"Feature orientation: {ori_name}")
 
-                ### Skip the current iteration
-                if iter < args.ignore: 
-                    logging.info(f"Skipping iteration: group='{group_name}', type='{ori_name}'")
-                    iter += 1
+                if iter < args.ignore: # Skip the current iteration
+                    logging.info(f"Skipping {iter}-th iteration :-O")
 
-                ### Continue the current iteration
                 else: 
+                    if args.pretrained_model_folder is not None:                       
+                        logging.info("Using the pre-trained model :-P")
 
-                    #### Train models from scratch:
-                    if args.pretrained_model_folder is None: 
-                        logging.info(f"Processing group: {group_name}, type: {ori_name}")
-                        iter += 1
+                        saved_json = os.path.join("outputs", args.pretrained_model_folder, f"results_{group_name}_{ori_name}.json")
+                        with open(saved_json, 'r', encoding='utf-8') as f:
+                            saved_results = json.load(f)
 
-                        included_features = [ # filter the features based on the domain and approach
-                            col for col in data_dict["X_train"].columns
-                            if any( domain in col for domain in ori_content["domains"] )
-                            and any( app in col for app in ori_content["approaches"] )
-                            and "RESTING" not in col
-                        ]
+                        best_model_name = saved_results["Model"]
+                        selected_features = saved_results["FeatureNames"]
+                        mean_train_mae = saved_results["MeanTrainMAE"]
 
-                        if ori_name == "FUNCTIONAL": # exclude "STRUCTURE" features
-                            included_features = [ col for col in included_features if "STRUCTURE" not in col ]
+                        saved_model = os.path.join("outputs", args.pretrained_model_folder, f"models_{group_name}_{ori_name}_{best_model_name}.pkl")
+                        with open(saved_model, 'rb') as f:
+                            best_model = pickle.load(f)
                         
-                        if len(included_features) == 0: 
-                            logging.warning(f"There are no available features for orientation '{ori_name}' in group '{group_name}'.")
+                        X_train_selected = data_dict["X_train"].loc[:, selected_features]
+
+                    else: 
+                        logging.info("Training model from scratch ...")
+
+                        if args.preselected_feature_folder is not None:                        
+                            logging.info("Using previously selected features :-P")
+
+                            saved_json = os.path.join("outputs", args.preselected_feature_folder, f"results_{group_name}_{ori_name}.json")
+                            with open(saved_json, 'r', errors='ignore') as f:
+                                saved_results = json.load(f)
+
+                            best_model_name = saved_results["Model"]
+                            selected_features = saved_results["FeatureNames"]
+
+                        else: 
+                            logging.info("Selecting features ...")
+                            included_features = [ # filter the features based on the domain and approach
+                                col for col in data_dict["X_train"].columns
+                                if any( domain in col for domain in ori_content["domains"] )
+                                and any( app in col for app in ori_content["approaches"] )
+                                and "RESTING" not in col
+                            ]
+
+                            if ori_name == "FUNCTIONAL": # exclude "STRUCTURE" features
+                                included_features = [ col for col in included_features if "STRUCTURE" not in col ]
+                            
+                            if len(included_features) == 0: 
+                                logging.warning("No features are included for the current orientation, the definition may be wrong!!")
+                                logging.info("Unable to train models, skipping ...")
+                                record_if_failed.append(f"{ori_name} of {group_name}.")
+                                continue
+
+                            else: 
+                                selected_features = feature_selection(
+                                    X=data_dict["X_train"].loc[:, included_features], 
+                                    y=data_dict["y_train"], 
+                                    model_name=config.feature_selection_model, 
+                                    explained_ratio=config.explained_ratio, 
+                                    seed=seed
+                                )
+
+                        if len(selected_features) == 0: 
+                            logging.warning("No features are selected for the current orientation!!")
+                            logging.info("Unable to train models, skipping ...")
                             record_if_failed.append(f"{ori_name} of {group_name}.")
                             continue
 
-                        else: 
-                            selected_features = feature_selection(
-                                X=data_dict["X_train"].loc[:, included_features], 
-                                y=data_dict["y_train"], 
-                                model_name=config.feature_selection_model, 
-                                explained_ratio=config.explained_ratio, 
-                                seed=seed
-                            )
-
-## STEP-3. Find the best model and save its parameters -------------------------------------------------------
-
-                            X_train_selected = data_dict["X_train"].loc[:, selected_features]
+                        else:
+                            X_train_selected = data_dict["X_train"].loc[:, selected_features]                            
 
                             if X_train_selected.empty: 
-                                logging.warning(f"After feature selection, there are no available features for orientation '{ori_name}' in group '{group_name}'.")
+                                logging.warning("No data left after feature selection!!")
+                                logging.info("Unable to train models, skipping ...")
                                 record_if_failed.append(f"{ori_name} of {group_name} after feature selection.")
                                 continue
 
-                            else:                    
+                            else:
+                                if args.preselected_feature_folder is not None:
+                                    included_models = [best_model_name]
+                                    logging.info(f"Since previously selected features are used, using the corresponding model type: {best_model_name}")
+                                else:
+                                    included_models = constant.model_names
+
+                                logging.info("Training and evaluating models ...")
                                 results = train_and_evaluate(
                                     X=X_train_selected, 
                                     y=data_dict["y_train"], 
-                                    model_names=constant.model_names, 
+                                    model_names=included_models, 
                                     seed=seed
-                                ) # Including ...
-                                    # the mean and standard deviation of MAE scores, ...
-                                    # the best model, and the best hyperparameters.
+                                ) # Including the mean and standard deviation of MAE scores, and all included model with their best hyperparameters.
 
                                 best_model_name = min(results, key=lambda x: results[x]["mae_mean"])
                                 best_model = results[best_model_name]["best_model"]
                                 mean_train_mae = results[best_model_name]["mae_mean"]
 
-                                model_outpath = (
-                                    config.model_outpath_template
-                                    .replace("groupname", group_name)
-                                    .replace("oriname", ori_name)
-                                    .replace("modeltype", best_model_name)
-                                )
+                                model_outpath = config.model_outpath_format.format(group_name, ori_name, best_model_name)
                                 with open(model_outpath, 'wb') as f:
                                     pickle.dump(best_model, f)
 
-                                logging.info(f"The trained model have been saved for group '{group_name}' and orientation '{ori_name}'.")
-
-                    #### Use the pre-trained model:
-                    else: 
-                        logging.info(f"Using pre-trained models for group '{group_name}' and orientation '{ori_name}'.")
-                        previous_path = os.path.join("outputs", args.pretrained_model_folder)
+                                logging.info("The best model is saved as a pickle file :-)")
                         
-                        saved_json = f"results_{group_name}_{ori_name}.json"
-                        with open(os.path.join(previous_path, saved_json), 'r', encoding='utf-8') as f:
-                            saved_results = json.load(f)
-                            best_model_name = saved_results["Model"]
-                            selected_features = saved_results["FeatureNames"]
-                            mean_train_mae = saved_results["MeanTrainMAE"]
-
-                        saved_model = f"models_{group_name}_{ori_name}_{best_model_name}.pkl"
-                        with open(os.path.join(previous_path, saved_model), 'rb') as f:
-                            best_model = pickle.load(f)
-                        
-                        X_train_selected = data_dict["X_train"].loc[:, selected_features]
-                        
-## STEP-4. Generate age-correction reference table -----------------------------------------------------------
-
+                    logging.info("Applying the best model to the training set ...")
                     y_pred_train = best_model.predict(X_train_selected)
                     pad_train = y_pred_train - data_dict["y_train"]
-                            
+
+                    logging.info("Generating age-correction reference table ...")
                     correction_ref = generate_correction_ref(
                         age=data_dict["y_train"], 
                         pad=pad_train, 
                         age_groups=pad_age_groups, 
                         age_breaks=pad_age_breaks
                     )
-
-## STEP-5. Apply the model, apply age-correction, and save the results ----------------------------------------
                             
-                    if data_dict["X_test"].empty: # apply the model to the training set
+                    if data_dict["X_test"].empty: 
+                        logging.info("Applying age-correction to the training set ...")
                         corrected_y_pred_train = apply_age_correction(
                             predictions=y_pred_train, 
                             true_ages=data_dict["y_train"], 
@@ -898,11 +915,15 @@ def main():
                             "NumberOfFeatures": len(selected_features), 
                             "FeatureNames": selected_features, 
                         }
+
                     else:
+                        logging.info("Evaluating the best model on the testing set ...")
                         X_test_selected = data_dict["X_test"].loc[:, selected_features]                       
                         y_pred_test = best_model.predict(X_test_selected)
                         y_pred_test = pd.Series(y_pred_test, index=data_dict["y_test"].index)
                         pad = y_pred_test - data_dict["y_test"]
+
+                        logging.info("Applying age-correction to the testing set ...")
                         corrected_y_pred_test = apply_age_correction(
                             predictions=y_pred_test, 
                             true_ages=data_dict["y_test"], 
@@ -931,20 +952,18 @@ def main():
                         }
 
                     save_results = convert_np_types(save_results)
-                    fp1 = (config.results_outpath_template
-                        .replace("groupname", group_name)
-                        .replace("oriname", ori_name))
-                    with open(fp1, 'w', encoding='utf-8') as f:
+                    results_outpath = config.results_outpath_format.format(group_name, ori_name)
+                    with open(results_outpath, 'w', encoding='utf-8') as f:
                         json.dump(save_results, f, ensure_ascii=False)
 
-                    logging.info(f"Model prediction have been saved as JSON files for group '{group_name}' and orientation '{ori_name}'.")
+                    logging.info("Modeling results are saved :-)")
 
-                ### Next iteration
+                iter += 1
 
     with open(config.failure_record_outpath, 'w') as f:
         f.write("\n".join(record_if_failed))
     
-    logging.info("The record of failed processing have been saved.")
+    logging.info("The record of failed processing is saved.")
 
 if __name__ == "__main__":
     main()
