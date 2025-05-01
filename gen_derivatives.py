@@ -140,9 +140,9 @@ def load_data(config, desc, selected_cols):
 
     ## The data used for model training:
     if desc.data_synthetized:
-        data_DF = pd.read_csv(os.path.join(config.input_folder, "preprocessed_data (marked).csv"))
+        data_DF = pd.read_csv(os.path.join(config.input_folder, "prepared_data (marked).csv"))
     else:
-        data_DF = pd.read_csv(os.path.join(config.input_folder, "preprocessed_data.csv"))
+        data_DF = pd.read_csv(os.path.join(config.input_folder, "prepared_data.csv"))
     data_DF["AGE_GROUP"] = pd.cut(data_DF["BASIC_INFO_AGE"], bins=desc.age_breaks, labels=desc.age_group_labels)
     if desc.sep_sex:
         data_DF["SEX"] = data_DF["BASIC_INFO_SEX"].replace({1: "M", 2: "F"})    
@@ -210,6 +210,45 @@ def load_data(config, desc, selected_cols):
 
     return data_DF, result_DF, selected_features, trainset_info_DF
 
+def compute_KL_divergence(targ_vals_R, targ_vals_S, num_bins=30):
+    '''
+    Compute relative entropy (also known as Kullback-Leibler divergence) between two distributions.
+    '''
+    hist_bins = np.linspace(
+        min(targ_vals_R.min(), targ_vals_S.min()), 
+        max(targ_vals_R.max(), targ_vals_S.max()), 
+        num_bins + 1
+    )
+    real_hist, _ = np.histogram(targ_vals_R, bins=hist_bins)
+    synth_hist, _ = np.histogram(targ_vals_S, bins=hist_bins)
+    D = entropy(
+        pk=synth_hist + 1e-10, qk=real_hist + 1e-10
+    ) # add a small number to avoid division by zero
+
+    return D
+
+def test_real_vs_synthetic(targ_vals_R, targ_vals_S, observed_D, n_permutations=1000):
+    '''
+    Use permutation (Monte Carlo) test 
+    to statistically assess whether the KL divergence is small enough 
+    to conclude that a synthetic dataset matches the original one in distribution. 
+    '''
+    labels = ['Real'] * len(targ_vals_R) + ['Synthetic'] * len(targ_vals_S)
+    combined_data = pd.concat([targ_vals_R, targ_vals_S], ignore_index=True)
+    permuted_D_list = []
+    for _ in range(n_permutations):
+        shuffled_labels = np.random.permutation(labels)
+        G1 = combined_data[np.array(shuffled_labels) == 'Real']
+        G2 = combined_data[np.array(shuffled_labels) == 'Synthetic']
+        D = compute_KL_divergence(G1, G2)
+        permuted_D_list.append(D)
+
+    permuted_D_list = np.array(permuted_D_list)
+    p_value = (permuted_D_list > observed_D).mean()
+
+    return p_value
+
+
 def plot_data_dist(data_DF, age_group, sex, selected_features, output_path, 
                    orientations=["STRUCTURE", "BEH", "FUNCTIONAL"],
                    num_bins=30, alpha=0.8, overwrite=False):
@@ -240,17 +279,12 @@ def plot_data_dist(data_DF, age_group, sex, selected_features, output_path,
                 targ_vals_S = data_DF.query(
                     "R_S == 'Synthetic' & AGE_GROUP == @age_group & SEX == @sex"
                 )[targ_col]
-                ## Compute Kullback-Leibler divergence:
-                hist_bins = np.linspace(
-                    min(targ_vals_R.min(), targ_vals_S.min()), 
-                    max(targ_vals_R.max(), targ_vals_S.max()), 
-                    num_bins + 1
+                D = compute_KL_divergence(
+                    targ_vals_R, targ_vals_S, num_bins=num_bins
                 )
-                real_hist, _ = np.histogram(targ_vals_R, bins=hist_bins)
-                synth_hist, _ = np.histogram(targ_vals_S, bins=hist_bins)
-                D = entropy( # relative entropy == K-L divergence; asymetric measure
-                    synth_hist + 1e-10, real_hist + 1e-10
-                ) # add a small number to avoid division by zero
+                p_value = test_real_vs_synthetic(
+                    targ_vals_R, targ_vals_S, D
+                )
                 ## Plot:
                 fig_idx = ori_idx * 2 + targ_idx + 1
                 ax = plt.subplot(len(orientations), 2, fig_idx)
@@ -261,7 +295,7 @@ def plot_data_dist(data_DF, age_group, sex, selected_features, output_path,
                 )
                 ax.set_xlabel(targ_col, fontsize=12)
                 ax.set_ylabel("")
-                ax.set_title(f"K-L Divergence = {D:.2f}", fontsize=14)
+                ax.set_title(f"K-L Divergence = {D:.2f} (p = {p_value:.2f})", fontsize=14)
                 handles.append(ax.get_legend_handles_labels()[0])
                 labels = ax.get_legend_handles_labels()[1]
     if DRAW_FIG: 
@@ -636,8 +670,10 @@ def main():
             targ_col_list = plot_data_dist(
                 data_DF, age_group, sex, selected_features, 
                 os.path.join(config.output_folder, config.data_hist_fn_template.replace("<GroupName>", group_name)), 
-                overwrite=args.overwrite
+                overwrite=True#args.overwrite
             )
+
+            targ_col_list
 
             ## Plot correlation matrices between selected features:
             for S_or_R in ["Synthetic", "Real"]: 

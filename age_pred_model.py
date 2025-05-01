@@ -63,6 +63,8 @@ parser.add_argument("-epr", "--explained_ratio", type=float, default=0.9,
 ## Model training:
 parser.add_argument("-pmf", "--pretrained_model_folder", type=str, default=None, 
                     help="The folder where the pre-trained model files (.pkl) are stored.")
+parser.add_argument("-m", "--training_model", type=int, default=None, 
+                    help="The type of the model to be used for training (0: 'ElasticNet', 1: 'RF', 2: 'CART', 3: 'LGBM', 4: 'XGBM').")
 parser.add_argument("-i", "--ignore", type=int, default=0, 
                     help="Ignore the first N iterations (in case you might be interrupted by an error and don't want to start from the beginning).")
 parser.add_argument("-s", "--seed", type=int, default=None, 
@@ -611,6 +613,16 @@ def main():
     else:
         seed = args.seed
 
+    ## Define the type of the model to be used for training:
+    if args.training_model is not None:
+        included_models = [constant.model_names[args.training_model]]
+        print_included_models = included_models
+    elif args.pretrained_model_folder is not None:
+        print_included_models = "Depend on the previous results"
+    else:
+        included_models = constant.model_names
+        print_included_models = included_models
+
     ## Define the sampling method and number of participants per balanced group:
     if args.upsample:
         balancing_method = "SMOTENC"
@@ -668,7 +680,7 @@ def main():
         "FeatureOrientations": list(constant.domain_approach_mapping.keys()),
         "FeatureSelectionModel": config.feature_selection_model, 
         "FeatureExplainedRatio": config.explained_ratio, 
-        "IncludedOptimizationModels": constant.model_names if args.preselected_feature_folder is None else "Depend on the previous results", 
+        "IncludedOptimizationModels": print_included_models, 
         "SkippedIterationNum": args.ignore, 
         "AgeCorrectionGroups": pad_age_groups
     }
@@ -852,12 +864,12 @@ def main():
                                 continue
 
                             else:
-                                if args.preselected_feature_folder is not None:
+                                if (args.training_model is None) and (args.preselected_feature_folder is not None):
                                     included_models = [best_model_name]
                                     logging.info(f"Since previously selected features are used, using the corresponding model type: {best_model_name}")
                                 else:
-                                    included_models = constant.model_names
-
+                                    logging.info(f"Using best model from the following model types: {included_models}")
+                                
                                 logging.info("Training and evaluating models ...")
                                 results = train_and_evaluate(
                                     X=X_train_selected, 
