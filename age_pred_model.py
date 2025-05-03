@@ -83,12 +83,23 @@ class Config:
         self.feature_selection_model = ["LassoCV", "RF", "XGBR"][args.feature_selection_model]
         self.explained_ratio = args.explained_ratio        
         self.pad_method = ["wais_8_seg", "every_5_yrs"][0]
-        if args.pretrained_model_folder is not None:
-            self.out_folder = os.path.join("outputs", f"{args.pretrained_model_folder}+")
-        elif args.seed is not None:
-            self.out_folder = os.path.join("outputs", f"{datetime.today().strftime('%Y-%m-%d')}_seed={args.seed}")
+
+        if args.upsample:
+            folder_prefix = f"{datetime.today().strftime('%Y-%m-%d')}_up-sampled"
+        elif args.downsample:
+            folder_prefix = f"{datetime.today().strftime('%Y-%m-%d')}_down-sampled"
+        elif args.bootstrap:
+            folder_prefix = f"{datetime.today().strftime('%Y-%m-%d')}_bootstrapped"
         else:
-            self.out_folder = os.path.join("outputs", datetime.today().strftime('%Y-%m-%d_%H.%M.%S'))
+            folder_prefix = f"{datetime.today().strftime('%Y-%m-%d')}_original"
+
+        if args.pretrained_model_folder is not None:
+            self.out_folder = os.path.join("outputs", f"{folder_prefix} ({args.pretrained_model_folder})")
+        elif args.seed is not None:
+            self.out_folder = os.path.join("outputs", f"{folder_prefix}_seed={args.seed}")
+        else:
+            self.out_folder = os.path.join("outputs", f"{folder_prefix}_{datetime.today().strftime('%H.%M.%S')}")
+        
         self.description_outpath = os.path.join(self.out_folder, "description.json")
         self.prepared_data_outpath = os.path.join(self.out_folder, "prepared_data.csv")
         self.logging_outpath = os.path.join(self.out_folder, "log.txt")

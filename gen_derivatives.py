@@ -248,7 +248,6 @@ def test_real_vs_synthetic(targ_vals_R, targ_vals_S, observed_D, n_permutations=
 
     return p_value
 
-
 def plot_data_dist(data_DF, age_group, sex, selected_features, output_path, 
                    orientations=["STRUCTURE", "BEH", "FUNCTIONAL"],
                    num_bins=30, alpha=0.8, overwrite=False):
@@ -658,6 +657,7 @@ def main():
 
     ## If the data was synthetized, compare real and synthetic data for each group:
     if desc.data_synthetized: 
+        
         for label in desc.label_list:
             if desc.sep_sex:
                 age_group, sex = label
@@ -670,7 +670,7 @@ def main():
             targ_col_list = plot_data_dist(
                 data_DF, age_group, sex, selected_features, 
                 os.path.join(config.output_folder, config.data_hist_fn_template.replace("<GroupName>", group_name)), 
-                overwrite=True#args.overwrite
+                overwrite=args.overwrite
             )
 
             targ_col_list
@@ -777,6 +777,24 @@ def main():
             figsize=(8, 6),
             overwrite=args.overwrite
         )
+
+    ## Plot correlation matrices with standardized features for all groups:
+    wide_DF = (
+        pd.concat(list(wide_sub_DF_dict.values()))
+        .merge(data_DF.loc[:, ["SID"]+standardized_features], on="SID", how="left")
+    ) 
+    fn3 = config.pad_cormat_fn_template.replace("in <GroupName>", 
+                                                f"& standardized features across all groups (N={len(wide_DF)})") 
+    plot_cormat(
+        wide_sub_DF=wide_DF, 
+        targ_cols=standardized_features, 
+        corrwith_cols=[ x[:3] for x in desc.feature_orientations ], 
+        x_col_names=[ x[:3] for x in desc.feature_orientations ], 
+        y_col_names=standardized_features, yr=90, 
+        output_path=os.path.join(config.output_folder, fn3), 
+        figsize=(8, 6),
+        overwrite=args.overwrite
+    )
 
     ## Calculate pairwise correlations (save to different sheets in an .xlsx file):
     corr_DF = calc_pairwise_corr(
