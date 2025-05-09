@@ -91,12 +91,14 @@ class Constants:
         self.N_per_group = {
             "wais_8_seg": {
                 "CTGAN": 60, 
+                "TVAE": 60*4, 
                 "SMOTENC": 60, 
                 "downsample": 15, 
                 "bootstrap": 15
             }, 
             "cut_44-45": {
                 "CTGAN": 60*4, 
+                "TVAE": 60*4, 
                 "SMOTENC": 60*4, 
                 "downsample": 15*4, 
                 "bootstrap": 15*4
