@@ -124,7 +124,10 @@ def load_description(config):
             self.sid_name = "TestingSubjID" if self.traintest else "SubjID"
 
             ## Whether the data was synthetized:
-            self.data_synthetized = True if desc_json["DataBalancingMethod"] == "SMOTENC" else False
+            if desc_json["DataBalancingMethod"] in ["CTGAN", "SMOTENC"]:
+                self.data_synthetized = True
+            else:
+                self.data_synthetized = False
 
     return Description()
 
@@ -782,7 +785,7 @@ def main():
     wide_DF = (
         pd.concat(list(wide_sub_DF_dict.values()))
         .merge(data_DF.loc[:, ["SID"]+standardized_features], on="SID", how="left")
-    ) 
+    )     
     fn3 = config.pad_cormat_fn_template.replace("in <GroupName>", 
                                                 f"& standardized features across all groups (N={len(wide_DF)})") 
     plot_cormat(
@@ -795,6 +798,7 @@ def main():
         figsize=(8, 6),
         overwrite=args.overwrite
     )
+    # wide_DF.to_csv(os.path.join(config.output_folder, "PAD values with standardized features.csv"), index=False)
 
     ## Calculate pairwise correlations (save to different sheets in an .xlsx file):
     corr_DF = calc_pairwise_corr(

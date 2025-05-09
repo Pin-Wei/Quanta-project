@@ -36,14 +36,16 @@ parser.add_argument("-age", "--age_method", type=int, default=1,
 parser.add_argument("-sex", "--by_gender", type=int, default=1, 
                     help="Whether to separate the data by gender (0: False, 1: True).")
 parser.add_argument("-upd", "--use_prepared_data", type=str, default=None, 
-                    help="File directory of the data to be used (.csv).")
+                    help="File path of the data to be used (.csv).")
 ## Balancing data such that all groups have the same number of participants:
-parser.add_argument("-u", "--upsample", action="store_true", default=False, 
+parser.add_argument("-u", "--smotenc", action="store_true", default=False, 
                     help="Up-sample the data using SMOTENC.")
 parser.add_argument("-d", "--downsample", action="store_true", default=False, 
                     help="Down-sample the data without replacement.")
 parser.add_argument("-b", "--bootstrap", action="store_true", default=False, 
                     help="Down-sample the data with replacement (i.e., bootstrapping).")
+parser.add_argument("-bg", "--balancing_groups", type=int, default=0, 
+                    help="The groups to be balanced.")
 parser.add_argument("-n", "--sample_size", type=int, default=None, 
                     help="The number of participants to up- or down-sample to. (if None, use the default number of participants per group set in constants.N_per_group).")
 ## Split data into training and testing sets:
@@ -77,6 +79,7 @@ class Config:
     def __init__(self):
         self.data_file_path = os.path.join("rawdata", "DATA_ses-01_2024-12-09.csv")
         self.inclusion_file_path = os.path.join("rawdata", "InclusionList_ses-01.csv")
+        self.balancing_groups = ["wais_8_seg", "cut_44-45"][args.balancing_groups]
         self.age_method = ["cut_at_40", "cut_44-45", "wais_8_seg"][args.age_method]
         self.by_gender = [False, True][args.by_gender]
         self.testset_ratio = args.testset_ratio
@@ -84,7 +87,9 @@ class Config:
         self.explained_ratio = args.explained_ratio        
         self.pad_method = ["wais_8_seg", "every_5_yrs"][0]
 
-        if args.upsample:
+        if args.use_prepared_data:
+            folder_prefix = datetime.today().strftime('%Y-%m-%d')
+        elif args.smotenc:
             folder_prefix = f"{datetime.today().strftime('%Y-%m-%d')}_up-sampled"
         elif args.downsample:
             folder_prefix = f"{datetime.today().strftime('%Y-%m-%d')}_down-sampled"
@@ -170,9 +175,16 @@ class Constants:
         ]
         ## The number of participants in each balanced group:
         self.N_per_group = {
-            "SMOTENC": 60, 
-            "downsample": 15, 
-            "bootstrap": 15
+            "wais_8_seg": {
+                "SMOTENC": 60, 
+                "downsample": 15, 
+                "bootstrap": 15
+            }, 
+            "cut_44-45": {
+                "SMOTENC": 60*4, 
+                "downsample": 15*4, 
+                "bootstrap": 15*4
+            }
         }
 
 ## Functions: =========================================================================
@@ -232,7 +244,6 @@ def make_balanced_dataset(DF, balancing_method, age_bin_dict, N_per_group, seed)
     target_col = "AGE-GROUP_SEX"
     target_classes = list(DF[target_col].unique())
     DF_imputed_list = []
-    # N_per_group = 0 if N_per_group is None else N_per_group
     for t in target_classes:
         sub_DF = DF[DF[target_col] == t]
         sub_X = sub_DF.drop(columns=[target_col])
@@ -240,15 +251,13 @@ def make_balanced_dataset(DF, balancing_method, age_bin_dict, N_per_group, seed)
         sub_DF_imputed = pd.DataFrame(imputer.fit_transform(sub_X), columns=sub_X.columns)
         sub_DF_imputed[target_col] = sub_DF[target_col].reset_index(drop=True)
         DF_imputed_list.append(sub_DF_imputed)
-        # if (balancing_method == "SMOTENC") and (len(sub_DF_imputed) > N_per_group): 
-        #     N_per_group = len(sub_DF_imputed)
-        # elif (balancing_method == "downsample" | balancing_method == "bootstrap") and (len(sub_DF_imputed) < N_per_group):
-        #     N_per_group = len(sub_DF_imputed)
     DF_imputed = pd.concat(DF_imputed_list)
     DF_imputed.reset_index(drop=True, inplace=True)
 
-    ## Make balanced datasets:    
-    if balancing_method == "SMOTENC":
+    ## Make balanced datasets:   
+    if balancing_method == "CTGAN":
+        raise NotImplementedError("CTGAN is not implemented yet.")
+    elif balancing_method == "SMOTENC":
         sampler = SMOTENC(
             categorical_features=["BASIC_INFO_AGE", "BASIC_INFO_SEX"], 
             sampling_strategy={ t: N_per_group for t in target_classes }, 
@@ -635,21 +644,35 @@ def main():
         print_included_models = included_models
 
     ## Define the sampling method and number of participants per balanced group:
-    if args.upsample:
-        balancing_method = "SMOTENC"
-    elif args.downsample:
-        balancing_method = "downsample"
-    elif args.bootstrap:
-        balancing_method = "bootstrap"
+    if args.use_prepared_data: # should be balanced
+        folder, _ = os.path.split(args.use_prepared_data)
+        balancing_method, balancing_groups, N_per_group = "--", "--", "--" # default
+        try:
+            with open(os.path.join(folder, "description.json"), 'r', errors='ignore') as f:
+                desc_json = json.load(f)
+            balancing_method = desc_json["DataBalancingMethod"]
+            balancing_groups = desc_json["BalancingGroups"]
+            N_per_group = desc_json["NumPerBalancedGroup"]
+        except:
+            pass
     else:
-        balancing_method = None
-        N_per_group = None
+        if args.smotenc:
+            balancing_method = "SMOTENC"
+        elif args.downsample:
+            balancing_method = "downsample"
+        elif args.bootstrap:
+            balancing_method = "bootstrap"
+        else: # no balancing
+            balancing_method = None
+            balancing_groups = None
+            N_per_group = None
 
-    if balancing_method is not None:
-        if args.sample_size is None:
-            N_per_group = constant.N_per_group[balancing_method]
-        else:
-            N_per_group = args.sample_size
+        if balancing_method is not None: # going to be balanced
+            balancing_groups = config.balancing_groups
+            if args.sample_size is None:
+                N_per_group = constant.N_per_group[balancing_groups][balancing_method]
+            else:
+                N_per_group = args.sample_size
 
     ## Define the labels and boundaries of age groups:
     age_bin_labels = list(constant.age_groups[config.age_method].keys())
@@ -679,9 +702,10 @@ def main():
     desc = {
         "Seed": seed, 
         "UsePreparedData": args.use_prepared_data, 
-        "RawDataVersion": config.data_file_path, 
-        "InclusionFileVersion": config.inclusion_file_path, 
+        "RawDataVersion": config.data_file_path if args.use_prepared_data is None else "--", 
+        "InclusionFileVersion": config.inclusion_file_path if args.use_prepared_data is None else "--", 
         "DataBalancingMethod": balancing_method, 
+        "BalancingGroups": balancing_groups,
         "NumPerBalancedGroup": N_per_group, 
         "SexSeparated": config.by_gender, 
         "AgeGroups": age_bin_labels, 
@@ -714,7 +738,12 @@ def main():
     if args.use_prepared_data: # Use the prepared dataset
         logging.info("Loading the prepared dataset ...")
         DF_prepared = pd.read_csv(args.use_prepared_data)
-
+        if "R_S" in DF_prepared.columns:
+            DF_prepared.to_csv(config.prepared_data_outpath.replace(".csv", " (marked).csv"), index=False)
+            DF_prepared.drop(columns=["R_S"], inplace=True)
+        else:
+            DF_prepared.to_csv(config.prepared_data_outpath, index=False)
+            
     else: # Load the raw dataset:
         logging.info("Loading the raw dataset and merging it with the inclusion table ...")
         DF = load_and_merge_datasets(
@@ -734,7 +763,7 @@ def main():
             )
             DF_prepared.drop(columns=[target_col], inplace=True)
 
-            if balancing_method == "SMOTENC":
+            if args.smotenc:
                 fn = config.prepared_data_outpath.replace(".csv", " (marked).csv")
                 DF_marked = mark_synthetic_data(DF, DF_prepared)
                 DF_marked.to_csv(fn, index=False)
