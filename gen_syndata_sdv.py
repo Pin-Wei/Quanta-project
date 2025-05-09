@@ -172,94 +172,100 @@ def make_balanced_dataset(DF, balancing_method, age_bin_dict, N_per_group, confi
         target_classes = list(DF[target_col].unique())
         DF_upsampled_list = []
         
-        for t in target_classes:        
-            DF_real = DF[DF[target_col] == t]
-            X_real = DF_real.drop(columns=[target_col])
-            N_syn = N_per_group - len(X_real)
-            print(f"Generating {N_syn} synthetic data for {t}...")
+        for t in target_classes:
+            dataset_path = config.output_dataset_path.replace(".csv", f"_{t}.csv")
 
-            ## Fill missing values (not including the 'AGE-GROUP' column):
-            imputer = SimpleImputer(strategy="median")
-            X_real_imputed = pd.DataFrame(imputer.fit_transform(X_real), columns=X_real.columns)
-            
-            ## Detect metadata and save:
-            if not os.path.exists(config.output_metadata_format.format(t)):
-                metadata = Metadata.detect_from_dataframe(data=X_real_imputed, infer_sdtypes=False, infer_keys=None)
-                metadata.update_columns(column_names=float_cols, sdtype='numerical', computer_representation='Float')
-                metadata.update_columns_metadata(column_metadata={
-                    "BASIC_INFO_SEX": {"sdtype": "categorical"},
-                    "BASIC_INFO_AGE": {"sdtype": "numerical", "computer_representation": "Int64"}
-                })
-                metadata.save_to_json(config.output_metadata_format.format(t))
-                print(f"Metadata is saved to {config.output_metadata_format.format(t)}\n")
-            else:
-                print(f"Loading metadata from {config.output_metadata_format.format(t)} ...")
-                metadata = Metadata.load_from_json(config.output_metadata_format.format(t))
+            if not os.path.exists(dataset_path):
+                DF_real = DF[DF[target_col] == t]
+                X_real = DF_real.drop(columns=[target_col])
+                N_syn = N_per_group - len(X_real)
+                print(f"Generating {N_syn} synthetic data for {t}...")
 
-            if not os.path.exists(config.output_model_format.format(t)):
-                ## Define model and modify transformers:
-                if balancing_method == "CTGAN":
-                    synthesizer = CTGANSynthesizer(metadata, verbose=True)
-                elif balancing_method == "TVAE":
-                    synthesizer = TVAESynthesizer(metadata, verbose=True)
-                else:
-                    raise ValueError(f"Unknown balancing method: {balancing_method}")
+                ## Fill missing values (not including the 'AGE-GROUP' column):
+                imputer = SimpleImputer(strategy="median")
+                X_real_imputed = pd.DataFrame(imputer.fit_transform(X_real), columns=X_real.columns)
                 
-                synthesizer.auto_assign_transformers(X_real_imputed)
-                for col in float_cols:
-                    synthesizer.update_transformers(column_name_to_transformer={
-                        col: FloatFormatter(learn_rounding_scheme=True)
+                ## Detect metadata and save:
+                if not os.path.exists(config.output_metadata_format.format(t)):
+                    metadata = Metadata.detect_from_dataframe(data=X_real_imputed, infer_sdtypes=False, infer_keys=None)
+                    metadata.update_columns(column_names=float_cols, sdtype='numerical', computer_representation='Float')
+                    metadata.update_columns_metadata(column_metadata={
+                        "BASIC_INFO_SEX": {"sdtype": "categorical"},
+                        "BASIC_INFO_AGE": {"sdtype": "numerical", "computer_representation": "Int64"}
                     })
-
-                ## Applying the transformations and train model (and save):
-                synthesizer.fit(X_real_imputed) # uses 'preprocess' and 'fit_processed_data' functions in succession.
-                synthesizer.save(config.output_model_format.format(t))
-                print(f"Model is saved to {config.output_model_format.format(t)}\n")
-            else:
-                print(f"Loading model from {config.output_model_format.format(t)} ...")
-                if balancing_method == "CTGAN":
-                    synthesizer = CTGANSynthesizer.load(config.output_model_format.format(t))
-                elif balancing_method == "TVAE":
-                    synthesizer = TVAESynthesizer.load(config.output_model_format.format(t))
+                    metadata.save_to_json(config.output_metadata_format.format(t))
+                    print(f"Metadata is saved to {config.output_metadata_format.format(t)}\n")
                 else:
-                    raise ValueError(f"Unknown balancing method: {balancing_method}")
+                    print(f"Loading metadata from {config.output_metadata_format.format(t)} ...")
+                    metadata = Metadata.load_from_json(config.output_metadata_format.format(t))
 
-            ## Generate synthetic data:
-            X_synthetic = synthesizer.sample(num_rows=N_syn)
+                if not os.path.exists(config.output_model_format.format(t)):
+                    ## Define model and modify transformers:
+                    if balancing_method == "CTGAN":
+                        synthesizer = CTGANSynthesizer(metadata, verbose=True)
+                    elif balancing_method == "TVAE":
+                        synthesizer = TVAESynthesizer(metadata, verbose=True)
+                    else:
+                        raise ValueError(f"Unknown balancing method: {balancing_method}")
+                    
+                    synthesizer.auto_assign_transformers(X_real_imputed)
+                    for col in float_cols:
+                        synthesizer.update_transformers(column_name_to_transformer={
+                            col: FloatFormatter(learn_rounding_scheme=True)
+                        })
 
-            ## Run diagnostic and save:
-            if os.path.exists(config.output_diagnostic_format.format(t)):
-                print("Removing old diagnostic report ...")
-                os.remove(config.output_diagnostic_format.format(t))
-            diagnostic = DiagnosticReport()
-            diagnostic.generate(
-                real_data=X_real_imputed,
-                synthetic_data=X_synthetic,
-                metadata=metadata.to_dict()["tables"]["table"]
-            )
-            diagnostic.save(filepath=config.output_diagnostic_format.format(t))
-            print(f"Diagnostic report is saved to {config.output_diagnostic_format.format(t)}\n")
+                    ## Applying the transformations and train model (and save):
+                    synthesizer.fit(X_real_imputed) # uses 'preprocess' and 'fit_processed_data' functions in succession.
+                    synthesizer.save(config.output_model_format.format(t))
+                    print(f"Model is saved to {config.output_model_format.format(t)}\n")
+                else:
+                    print(f"Loading model from {config.output_model_format.format(t)} ...")
+                    if balancing_method == "CTGAN":
+                        synthesizer = CTGANSynthesizer.load(config.output_model_format.format(t))
+                    elif balancing_method == "TVAE":
+                        synthesizer = TVAESynthesizer.load(config.output_model_format.format(t))
+                    else:
+                        raise ValueError(f"Unknown balancing method: {balancing_method}")
 
-            ## Evaluate quality:
-            if os.path.exists(config.output_quality_format.format(t)):
-                print("Removing old quality report ...")
-                os.remove(config.output_quality_format.format(t))
-            quality = QualityReport()
-            quality.generate(
-                real_data=X_real_imputed,
-                synthetic_data=X_synthetic,
-                metadata=metadata.to_dict()["tables"]["table"]
-            )
-            quality.save(filepath=config.output_quality_format.format(t))
-            print(f"Quality report is saved to {config.output_quality_format.format(t)}\n")
-            
-            ## Concatenate real and synthetic data:
-            X_synthetic.insert(1, "R_S", "Synthetic") 
-            X_real_imputed.insert(1, "R_S", "Real")
-            DF_upsampled = pd.concat([X_synthetic, X_real_imputed], axis=0).copy() # add .copy() to de-fragmented
+                ## Generate synthetic data:
+                X_synthetic = synthesizer.sample(num_rows=N_syn)
 
-            ## Await to be concatenated and saved:
-            DF_upsampled_list.append(DF_upsampled, ignore_index=True)
+                ## Run diagnostic and save:
+                if os.path.exists(config.output_diagnostic_format.format(t)):
+                    print("Removing old diagnostic report ...")
+                    os.remove(config.output_diagnostic_format.format(t))
+                diagnostic = DiagnosticReport()
+                diagnostic.generate(
+                    real_data=X_real_imputed,
+                    synthetic_data=X_synthetic,
+                    metadata=metadata.to_dict()["tables"]["table"]
+                )
+                diagnostic.save(filepath=config.output_diagnostic_format.format(t))
+                print(f"Diagnostic report is saved to {config.output_diagnostic_format.format(t)}\n")
+
+                ## Evaluate quality:
+                if os.path.exists(config.output_quality_format.format(t)):
+                    print("Removing old quality report ...")
+                    os.remove(config.output_quality_format.format(t))
+                quality = QualityReport()
+                quality.generate(
+                    real_data=X_real_imputed,
+                    synthetic_data=X_synthetic,
+                    metadata=metadata.to_dict()["tables"]["table"]
+                )
+                quality.save(filepath=config.output_quality_format.format(t))
+                print(f"Quality report is saved to {config.output_quality_format.format(t)}\n")
+                
+                ## Concatenate real and synthetic data:
+                X_synthetic.insert(1, "R_S", "Synthetic") 
+                X_real_imputed.insert(1, "R_S", "Real")
+                DF_upsampled = pd.concat([X_synthetic, X_real_imputed], axis=0).copy() # add .copy() to de-fragmented
+
+                DF_upsampled.to_csv(dataset_path, index=False)
+            else:
+                DF_upsampled = pd.read_csv(dataset_path)
+
+            DF_upsampled_list.append(DF_upsampled)
 
         DF_balanced = pd.concat(DF_upsampled_list, axis=0).reset_index(drop=True)
         DF_balanced.insert(0, "ID", [ f"sub-{x:04d}" for x in DF_balanced.index ])
