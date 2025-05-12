@@ -124,7 +124,7 @@ def load_description(config):
             self.sid_name = "TestingSubjID" if self.traintest else "SubjID"
 
             ## Whether the data was synthetized:
-            if desc_json["DataBalancingMethod"] in ["CTGAN", "SMOTENC"]:
+            if desc_json["DataBalancingMethod"] in ["SMOTENC", "CTGAN", "TVAE"]:
                 self.data_synthetized = True
             else:
                 self.data_synthetized = False

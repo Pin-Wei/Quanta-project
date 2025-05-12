@@ -77,8 +77,9 @@ args = parser.parse_args()
 
 class Config:
     def __init__(self):
-        self.data_file_path = os.path.join("rawdata", "DATA_ses-01_2024-12-09.csv")
-        self.inclusion_file_path = os.path.join("rawdata", "InclusionList_ses-01.csv")
+        self.source_path = os.path.dirname(os.path.abspath(__file__))
+        self.data_file_path = os.path.join(self.source_path, "rawdata", "DATA_ses-01_2024-12-09.csv")
+        self.inclusion_file_path = os.path.join(self.source_path, "rawdata", "InclusionList_ses-01.csv")
         self.balancing_groups = ["wais_8_seg", "cut_44-45"][args.balancing_groups]
         self.age_method = ["cut_at_40", "cut_44-45", "wais_8_seg"][args.age_method]
         self.by_gender = [False, True][args.by_gender]
@@ -88,9 +89,10 @@ class Config:
         self.pad_method = ["wais_8_seg", "every_5_yrs"][0]
 
         if args.use_prepared_data:
-            folder_prefix = datetime.today().strftime('%Y-%m-%d')
+            syn_method = os.path.basename(os.path.dirname(args.use_prepared_data)).split("_")[0]
+            folder_prefix = f"{datetime.today().strftime('%Y-%m-%d')}_{syn_method}"
         elif args.smotenc:
-            folder_prefix = f"{datetime.today().strftime('%Y-%m-%d')}_up-sampled"
+            folder_prefix = f"{datetime.today().strftime('%Y-%m-%d')}_smotenc" # up-sampled
         elif args.downsample:
             folder_prefix = f"{datetime.today().strftime('%Y-%m-%d')}_down-sampled"
         elif args.bootstrap:
@@ -99,18 +101,19 @@ class Config:
             folder_prefix = f"{datetime.today().strftime('%Y-%m-%d')}_original"
 
         if args.pretrained_model_folder is not None:
-            self.out_folder = os.path.join("outputs", f"{folder_prefix} ({args.pretrained_model_folder})")
+            self.out_folder = os.path.join(self.source_path, "outputs", f"{folder_prefix} ({args.pretrained_model_folder})")
         elif args.seed is not None:
-            self.out_folder = os.path.join("outputs", f"{folder_prefix}_seed={args.seed}")
+            self.out_folder = os.path.join(self.source_path, "outputs", f"{folder_prefix}_seed={args.seed}")
         else:
-            self.out_folder = os.path.join("outputs", f"{folder_prefix}_{datetime.today().strftime('%H.%M.%S')}")
+            self.out_folder = os.path.join(self.source_path, "outputs", f"{folder_prefix}_{datetime.today().strftime('%H.%M.%S')}")
         
         self.description_outpath = os.path.join(self.out_folder, "description.json")
         self.prepared_data_outpath = os.path.join(self.out_folder, "prepared_data.csv")
         self.logging_outpath = os.path.join(self.out_folder, "log.txt")
         self.failure_record_outpath = os.path.join(self.out_folder, "failure_record.txt")
-        self.results_outpath_format = os.path.join(self.out_folder, "results_{}_{}.json")
         self.model_outpath_format = os.path.join(self.out_folder, "models_{}_{}_{}.pkl")
+        self.model_maes_outpath_format = os.path.join(self.out_folder, "model_maes_{}_{}.json")
+        self.results_outpath_format = os.path.join(self.out_folder, "results_{}_{}.json")
 
 class Constants:
     def __init__(self):
@@ -922,12 +925,31 @@ def main():
                                 best_model = results[best_model_name]["best_model"]
                                 mean_train_mae = results[best_model_name]["mae_mean"]
 
+                                logging.info("Saving the best model to the main output folder ...")
                                 model_outpath = config.model_outpath_format.format(group_name, ori_name, best_model_name)
                                 with open(model_outpath, 'wb') as f:
                                     pickle.dump(best_model, f)
 
-                                logging.info("The best model is saved as a pickle file :-)")
-                        
+                                logging.info("Saving other models to the 'other models' folder ...")
+                                for model_name, model_result in results.items():
+                                    if model_name != best_model_name: 
+                                        fp, fn = os.path.split(config.model_outpath_format.format(group_name, ori_name, model_name))
+                                        os.makedirs(os.path.join(fp, "other models"), exist_ok=True)
+                                        model_outpath = os.path.join(fp, "other models", fn)
+                                        with open(model_outpath, 'wb') as f:
+                                            pickle.dump(model_result["best_model"], f)
+
+                                logging.info("Saving the mean and std of MAE values for all models ...")   
+                                model_maes = {
+                                    model_name: {
+                                        'Mean': res["mae_mean"], 
+                                        'STD': res["mae_std"]
+                                    } for model_name, res in results.items()
+                                }
+                                model_maes_outpath = config.model_maes_outpath_format.format(group_name, ori_name)
+                                with open(model_maes_outpath, 'w') as f:
+                                    json.dump(model_maes, f)
+                                
                     logging.info("Applying the best model to the training set ...")
                     y_pred_train = best_model.predict(X_train_selected)
                     pad_train = y_pred_train - data_dict["y_train"]
