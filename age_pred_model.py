@@ -107,6 +107,9 @@ class Config:
         else:
             self.out_folder = os.path.join(self.source_path, "outputs", f"{folder_prefix}_{datetime.today().strftime('%H.%M.%S')}")
         
+        while os.path.exists(self.out_folder): # make sure the output folder does not exist:
+            self.out_folder = self.out_folder + "+"
+
         self.description_outpath = os.path.join(self.out_folder, "description.json")
         self.prepared_data_outpath = os.path.join(self.out_folder, "prepared_data.csv")
         self.logging_outpath = os.path.join(self.out_folder, "log.txt")
@@ -617,13 +620,9 @@ def main():
     config = Config()
     constant = Constants()
 
-    ## Create output folder if it doesn't exist:
-    if not os.path.exists(config.out_folder):
-        os.makedirs(config.out_folder)
+    os.makedirs(config.out_folder) # should not exist
 
-    ## Setup logging file:
-    if os.path.exists(config.logging_outpath):
-        os.remove(config.logging_outpath)
+    ## Setup logging:
     logging.basicConfig(
         level=logging.INFO, 
         format='%(asctime)s - %(levelname)s - %(message)s', 
