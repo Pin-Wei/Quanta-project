@@ -25,6 +25,8 @@ parser.add_argument("-bg", "--balancing_groups", type=int, default=1,
 parser.add_argument("-agi", "--age_group_included", type=str, default=None,
                     help="The age group labels to be included in balancing. "+
                     "If multiple age group labels are provided, separate them by comma.")
+parser.add_argument("-nqc", "--no_quality_check", action="store_true", 
+                    help="Not to perform quality check.")
 parser.add_argument("-f", "--folder", type=str, default=None, 
                     help="The folder where the output files will be stored.")
 args = parser.parse_args()
@@ -249,18 +251,21 @@ def make_balanced_dataset(DF, balancing_method, age_bin_dict, N_per_group, confi
                 print(f"Diagnostic report is saved to {config.output_diagnostic_format.format(t)}\n")
 
                 ## Evaluate quality:
-                if os.path.exists(config.output_quality_format.format(t)):
-                    print("Removing old quality report ...")
-                    os.remove(config.output_quality_format.format(t))
-                quality = QualityReport()
-                quality.generate(
-                    real_data=X_real_imputed,
-                    synthetic_data=X_synthetic,
-                    metadata=metadata.to_dict()["tables"]["table"]
-                )
-                quality.save(filepath=config.output_quality_format.format(t))
-                print(f"Quality report is saved to {config.output_quality_format.format(t)}\n")
-                
+                if not args.no_quality_check:
+                    if os.path.exists(config.output_quality_format.format(t)):
+                        print("Removing old quality report ...")
+                        os.remove(config.output_quality_format.format(t))
+                    quality = QualityReport()
+                    quality.generate(
+                        real_data=X_real_imputed,
+                        synthetic_data=X_synthetic,
+                        metadata=metadata.to_dict()["tables"]["table"]
+                    )
+                    quality.save(filepath=config.output_quality_format.format(t))
+                    print(f"Quality report is saved to {config.output_quality_format.format(t)}\n")
+                else:
+                    print("Skipping quality check ...")
+                    
                 ## Concatenate real and synthetic data:
                 X_synthetic.insert(1, "R_S", "Synthetic") 
                 X_real_imputed.insert(1, "R_S", "Real")
