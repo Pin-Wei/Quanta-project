@@ -104,8 +104,7 @@ def load_description(config):
             self.age_group_labels = desc_json["AgeGroups"]
             self.age_breaks = (
                 [ 0 ] + 
-                [ int(x.split("-")[0]) for x in self.age_group_labels[1:-1] ] + 
-                [ int(self.age_group_labels[-1].split("-")[-1]) ] + 
+                [ int(x.split("-")[1]) for x in self.age_group_labels[:-1] ] + 
                 [ np.inf ]
             )
             self.label_cols = ["AgeGroup", "Sex"] if self.sep_sex else ["AgeGroup"]
@@ -675,8 +674,6 @@ def main():
                 os.path.join(config.output_folder, config.data_hist_fn_template.replace("<GroupName>", group_name)), 
                 overwrite=args.overwrite
             )
-
-            targ_col_list
 
             ## Plot correlation matrices between selected features:
             for S_or_R in ["Synthetic", "Real"]: 
