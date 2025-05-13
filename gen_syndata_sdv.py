@@ -15,13 +15,16 @@ from rdt.transformers.numerical import FloatFormatter
 from sdv.single_table import CTGANSynthesizer, TVAESynthesizer
 from sdmetrics.reports.single_table import DiagnosticReport, QualityReport
 
-from age_pred_model import convert_np_types
+# from age_pred_model import convert_np_types
 
 parser = argparse.ArgumentParser(description="")
 parser.add_argument("-s", "--syn_method", type=int, default=0, 
                     help="The synthesize method to be used (0: 'ctgan', 1: 'tvae').")
 parser.add_argument("-bg", "--balancing_groups", type=int, default=1, 
                     help="Group segmentation approach for balancing (0: 'wais_8_seg', 1: 'cut_44-45').")
+parser.add_argument("-agi", "--age_group_included", type=str, default=None,
+                    help="The age group labels to be included in balancing. "+
+                    "If multiple age group labels are provided, separate them by comma.")
 parser.add_argument("-f", "--folder", type=str, default=None, 
                     help="The folder where the output files will be stored.")
 args = parser.parse_args()
@@ -279,6 +282,18 @@ def make_balanced_dataset(DF, balancing_method, age_bin_dict, N_per_group, confi
         print(f"{balancing_method} dataset exists")
         print("If you want to create a new one, please specify a different folder name.")
 
+def convert_np_types(obj):
+    if isinstance(obj, np.ndarray):
+        return obj.tolist() # Convert np.ndarray to list
+    elif isinstance(obj, np.generic): 
+        return obj.item()   # Convert np.generic to scalar
+    elif isinstance(obj, list):
+        return [ convert_np_types(i) for i in obj ] 
+    elif isinstance(obj, dict):
+        return { k: convert_np_types(v) for k, v in obj.items() } 
+    else:
+        return obj
+    
 ## Main: ==============================================================================
 
 if __name__ == "__main__":
@@ -298,6 +313,14 @@ if __name__ == "__main__":
     balancing_groups = ["wais_8_seg", "cut_44-45"][args.balancing_groups]
     age_bin_dict = constant.age_groups[balancing_groups]
     N_per_group = constant.N_per_group[balancing_groups][balancing_method]
+
+    ## Specifically for certain groups:
+    if args.age_group_included is not None:
+        age_group_included = args.age_group_included.split(",")
+        age_bin_dict = {
+            k: v for k, v in age_bin_dict.items() 
+            if k in age_group_included
+        }
 
     ## Load data and make balanced dataset:
     DF = load_and_merge_datasets(
