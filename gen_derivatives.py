@@ -614,7 +614,7 @@ def build_sunburst_data(feature_df):
         labels.append(approach_label)
         parents.append("") # root
         values.append(count)
-        approach_label_clean = domain_label.split(" (")[0]
+        approach_label_clean = approach_label.split(" (")[0]
         colors.append(color_dict.get(approach_label_clean))
 
     for (approach_label, domain_label), count in domain_counts.items():
@@ -669,8 +669,9 @@ def plot_many_feature_sunbursts(feature_DF_dict, fig_title, subplot_annots, outp
             labels, parents, values, colors = build_sunburst_data(feature_DF)
             sunburst_fig = go.Figure(go.Sunburst(
                 labels=labels, parents=parents, values=values, marker=dict(colors=colors),
-                branchvalues="total", width=500, height=500
+                branchvalues="total"
             ))
+            sunburst_fig.update_layout(width=500, height=500)
             # sunburst_fig = px.sunburst(
             #     feature_DF, path=["approach_and_pr", "domain_and_pr"], 
             #     maxdepth=2, width=500, height=500
@@ -927,7 +928,7 @@ def main():
         }
 
         ## Prepare annotation for each subplot:
-        subplot_annots = {}
+        subplot_annots, fig_titles = {}, {}
         for label in desc.label_list: 
             if desc.sep_sex:
                 age_group, sex = label
@@ -943,7 +944,8 @@ def main():
             model_type = model_info['Model'].iloc[0]
             n_features = model_info['NumberOfFeatures'].iloc[0]
             subplot_annots[group_name] = f"{group_name} ({model_type} - {n_features})" 
-                
+            fig_titles[group_name] = f"{model_type} ({n_features})"
+
         ## One set of sunburst charts per feature type:
         fp = os.path.join(config.output_folder, config.sunburst_fn_template.replace("<FeatureType>", ori_name[:3]))
         plot_many_feature_sunbursts(
@@ -956,12 +958,9 @@ def main():
         
         ## One sunburst chart per group:
         for group_name, feature_DF in feature_DF_dict.items():
-            model_info = model_info_DF.query(
-                "Type == @ori_name & AgeGroup == @group_name"
-            )
             plot_feature_sunburst(
                 feature_DF=feature_DF, 
-                fig_title=f"{model_info['Model'].iloc[0]} ({model_info['NumberOfFeatures'].iloc[0]})", 
+                fig_title=fig_titles[group_name], 
                 output_path=fp.replace(".png", f" ({group_name}).png"),
                 overwrite=args.overwrite
             )

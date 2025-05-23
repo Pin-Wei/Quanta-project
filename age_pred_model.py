@@ -32,7 +32,7 @@ import json
 parser = argparse.ArgumentParser(description="")
 ## How to split data into groups:
 parser.add_argument("-age", "--age_method", type=int, default=1, 
-                    help="The method to define age groups (0: 'cut_at_40', 1: 'cut_44-45', 2: 'wais_8_seg').")
+                    help="The method to define age groups (0: 'no_cut', 1: 'cut_at_40', 2: 'cut_44-45', 3: 'wais_8_seg').")
 parser.add_argument("-sex", "--by_gender", type=int, default=1, 
                     help="Whether to separate the data by gender (0: False, 1: True).")
 parser.add_argument("-upd", "--use_prepared_data", type=str, default=None, 
@@ -81,7 +81,7 @@ class Config:
         self.data_file_path = os.path.join(self.source_path, "rawdata", "DATA_ses-01_2024-12-09.csv")
         self.inclusion_file_path = os.path.join(self.source_path, "rawdata", "InclusionList_ses-01.csv")
         self.balancing_groups = ["wais_8_seg", "cut_44-45"][args.balancing_groups]
-        self.age_method = ["cut_at_40", "cut_44-45", "wais_8_seg"][args.age_method]
+        self.age_method = ["no_cut", "cut_at_40", "cut_44-45", "wais_8_seg"][args.age_method]
         self.by_gender = [False, True][args.by_gender]
         self.testset_ratio = args.testset_ratio
         self.feature_selection_model = ["LassoCV", "RF", "XGBR"][args.feature_selection_model]
@@ -122,6 +122,9 @@ class Constants:
     def __init__(self):
         ## The age groups defined by different methods:
         self.age_groups = { 
+            "no_cut": {
+                "all": (0, np.inf)
+            }, 
             "cut_at_40": {
                 "le-40" : ( 0, 40),    # less than or equal to
                 "ge-41" : (41, np.inf) # greater than or equal to
