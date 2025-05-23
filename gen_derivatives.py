@@ -13,6 +13,8 @@ from scipy.stats import pearsonr, entropy
 
 import seaborn as sns
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+import plotly.graph_objects as go
 import plotly.express as px
 import plotly.io as pio
 from plotly.subplots import make_subplots
@@ -589,8 +591,64 @@ def make_feature_DF(ori_name, feature_list, domain_approach_mapping):
     )    
     return feature_DF
 
-def plot_feature_sunbursts(feature_DF_dict, fig_title, subplot_annots, output_path, 
-                           overwrite=False, ncol=None, nrow=None):
+def build_sunburst_data(feature_df):
+    labels, parents, values, colors = [], [], [], []
+    color_dict = {
+        "MRI":       "#4C6B8A",  # Deep muted blue
+        "EEG":       "#6FAE9E",  # Balanced teal    
+        "BEH":       "#F9D66B",  # Brighter mustard yellow
+        "STRUCTURE": "#B2C8DF",  # Pale icy blue-gray
+        "GM":        "#CFCFC4",  # Light gray
+        "WM":        "#D7E3F4",  # Almost white blue 
+        "MEMORY":    "#A5C9B3",  # Calm mint sage
+        "MOTOR":     "#F6A96C",  # Balanced warm orange
+        "LANGUAGE":  "#A7A1D0"   # Muted violet blue
+    }
+    approach_counts = (
+        feature_df["approach_and_pr"].value_counts().to_dict()
+    )
+    domain_counts = (
+        feature_df.groupby(["approach_and_pr", "domain_and_pr"]).size().to_dict()
+    )
+    for approach_label, count in approach_counts.items():
+        labels.append(approach_label)
+        parents.append("") # root
+        values.append(count)
+        approach_label_clean = domain_label.split(" (")[0]
+        colors.append(color_dict.get(approach_label_clean))
+
+    for (approach_label, domain_label), count in domain_counts.items():
+        labels.append(domain_label)
+        parents.append(approach_label)
+        values.append(count)
+        domain_label_clean = domain_label.split(" (")[0]
+        colors.append(color_dict.get(domain_label_clean))
+
+    return labels, parents, values, colors
+
+def plot_feature_sunburst(feature_DF, fig_title, output_path, overwrite=False):
+    '''
+    Plot the sunburst plot for the features in the given DataFrame.
+    '''
+    if (not os.path.exists(output_path)) or overwrite:
+        labels, parents, values, colors = build_sunburst_data(feature_DF)
+        fig = go.Figure(go.Sunburst(
+            labels=labels, parents=parents, values=values, marker=dict(colors=colors),
+            branchvalues="total"
+        ))
+        fig.update_layout(
+            title_text=fig_title, 
+            title_x=0.5, title_y=1, font=dict(size=20), 
+            template="plotly_white", 
+            width=300, height=300, 
+            margin=dict(t=50, l=0, r=0, b=0)
+        )
+        pio.write_image(fig, output_path, format="png", scale=2)
+        plt.close()
+        print(f"\nSunburst plot is saved to:\n{output_path}")
+
+def plot_many_feature_sunbursts(feature_DF_dict, fig_title, subplot_annots, output_path, 
+                                overwrite=False, ncol=None, nrow=None):
     '''
     Plot the sunburst plots for each dataframe in the dictionary, 
     whose keys are the group names.
@@ -608,10 +666,15 @@ def plot_feature_sunbursts(feature_DF_dict, fig_title, subplot_annots, output_pa
         for x, (group_name, feature_DF) in enumerate(feature_DF_dict.items()):
             c = (x % 2) + 1
             r = (x // 2) + 1
-            sunburst_fig = px.sunburst(
-                feature_DF, path=["approach_and_pr", "domain_and_pr"], 
-                maxdepth=2, width=500, height=500
-            )
+            labels, parents, values, colors = build_sunburst_data(feature_DF)
+            sunburst_fig = go.Figure(go.Sunburst(
+                labels=labels, parents=parents, values=values, marker=dict(colors=colors),
+                branchvalues="total", width=500, height=500
+            ))
+            # sunburst_fig = px.sunburst(
+            #     feature_DF, path=["approach_and_pr", "domain_and_pr"], 
+            #     maxdepth=2, width=500, height=500
+            # )
             fig.add_trace(
                 sunburst_fig.data[0], row=r, col=c
             )
@@ -633,7 +696,37 @@ def plot_feature_sunbursts(feature_DF_dict, fig_title, subplot_annots, output_pa
         pio.write_image(fig, output_path, format="png", scale=2)
         plt.close()
         print(f"\nSunburst plot is saved to:\n{output_path}")
-        
+
+def plot_color_legend(color_dict, output_path, 
+                      fig_size=(4.5, 1.5), n_cols=3, box_size=0.3, overwrite=False):
+    '''
+    Plot a color legend for the feature sunburst plots.
+    '''
+    n_rows = (len(color_dict) + n_cols - 1) // n_cols
+
+    if (not os.path.exists(output_path)) or overwrite:
+        fig, ax = plt.subplots(figsize=fig_size)
+        ax.axis("off")
+        for idx, (label, color) in enumerate(color_dict.items()):
+            x = (idx % n_cols) * 3 # 3 is the horizontal spacing unit
+            y = (idx // n_cols) * -1 # make it stacked from the top to the bottom
+            rect = mpatches.Rectangle(
+                (x, y), width=box_size, height=box_size, color=color
+            )
+            ax.add_patch(rect)
+            ax.text(
+                s=label, 
+                x=(x + box_size + 0.2), # 0.2 units to the right of the color block
+                y=(y + box_size / 2), # half the height of the color block
+                ha='left', va='center', fontsize=11
+            )
+        ax.set_xlim(-0.5, n_cols * 3) # start from -0.5 to make the first color block not touch the edge
+        ax.set_ylim(-n_rows, 1) # set 1 as the upper bound to leave space at the top
+        plt.tight_layout()
+        plt.savefig(output_path, dpi=200)
+        plt.close()
+        print(f"\nColor legend is saved to:\n{output_path}")
+
 ## Main function: ---------------------------------------------------------------------
 
 def main():
@@ -852,13 +945,26 @@ def main():
             subplot_annots[group_name] = f"{group_name} ({model_type} - {n_features})" 
                 
         ## One set of sunburst charts per feature type:
-        plot_feature_sunbursts(
+        fp = os.path.join(config.output_folder, config.sunburst_fn_template.replace("<FeatureType>", ori_name[:3]))
+        plot_many_feature_sunbursts(
             feature_DF_dict=feature_DF_dict, 
             fig_title=f"{ori_name[:3]}", 
             subplot_annots=subplot_annots, 
-            output_path=os.path.join(config.output_folder, config.sunburst_fn_template.replace("<FeatureType>", ori_name[:3])),
+            output_path=fp,
             overwrite=args.overwrite
         )
+        
+        ## One sunburst chart per group:
+        for group_name, feature_DF in feature_DF_dict.items():
+            model_info = model_info_DF.query(
+                "Type == @ori_name & AgeGroup == @group_name"
+            )
+            plot_feature_sunburst(
+                feature_DF=feature_DF, 
+                fig_title=f"{model_info['Model'].iloc[0]} ({model_info['NumberOfFeatures'].iloc[0]})", 
+                output_path=fp.replace(".png", f" ({group_name}).png"),
+                overwrite=args.overwrite
+            )
 
 ## Finally: ---------------------------------------------------------------------------
 
