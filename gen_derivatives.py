@@ -376,7 +376,7 @@ def modify_DF(result_DF, desc):
     )
     long_result_DF["PAD_abs_value"] = long_result_DF["PAD_value"].abs()
 
-    long_result_DF = long_result_DF.sort_values(by=desc.label_cols, ascending=False)
+    long_result_DF = long_result_DF.sort_values(by=desc.label_cols)
     if desc.sep_sex:
         long_result_DF["AgeSex"] = long_result_DF["AgeGroup"] + "_" + long_result_DF["Sex"]
 
@@ -586,18 +586,28 @@ def make_feature_DF(ori_name, feature_list, domain_approach_mapping):
     within_approach_domain_num = feature_DF.groupby("approach")["domain"].value_counts()   
     within_approach_domain_pr = feature_DF.groupby("approach")["domain"].value_counts(normalize=True) * 100
     feature_DF["approach_num"] = feature_DF["approach"].map(approach_num)
-    feature_DF["approach_and_num"] = feature_DF.apply(lambda x: f"{x['approach']} ({x['approach_num']})", axis=1)
+    feature_DF["approach_and_num"] = feature_DF.apply(
+        lambda x: f"{x['approach']} ({x['approach_num']})", axis=1)
     feature_DF["approach_pr"] = feature_DF["approach"].map(approach_pr)
-    feature_DF["approach_and_pr"] = feature_DF.apply(lambda x: f"{x['approach']}<br>({x['approach_pr']:.1f}%)" if x['approach_pr'] > 7 else f"{x['approach']} ({x['approach_pr']:.1f}%)", axis=1)
-    feature_DF["domain_num"] = feature_DF.apply(lambda x: within_approach_domain_num[x["approach"]][x["domain"]], axis=1)
-    feature_DF["domain_and_num"] = feature_DF.apply(lambda x: f"{x['domain']} ({x['domain_num']})", axis=1)  
-    feature_DF["domain_pr"] = feature_DF.apply(lambda x: within_approach_domain_pr[x["approach"]][x["domain"]], axis=1)
-    feature_DF["overall_pr"] = feature_DF.apply(lambda x: within_approach_domain_pr[x["approach"]][x["domain"]] * x["approach_pr"], axis=1)
-    feature_DF["domain_and_pr"] = feature_DF.apply(lambda x: f"{x['domain']}<br>({x['domain_pr']:.1f}%)" if x['overall_pr'] > 300 else f"{x['domain']} ({x['domain_pr']:.1f}%)", axis=1)    
+    feature_DF["approach_and_pr"] = feature_DF.apply(
+        lambda x: f"{x['approach']}<br>({x['approach_pr']:.1f}%)" if x['approach_pr'] > 7 
+        else f"{x['approach']} ({x['approach_pr']:.1f}%)", axis=1)
+    feature_DF["domain_num"] = feature_DF.apply(
+        lambda x: within_approach_domain_num[x["approach"]][x["domain"]], axis=1)
+    feature_DF["domain_and_num"] = feature_DF.apply(
+        lambda x: f"{x['domain']} ({x['domain_num']})", axis=1)  
+    feature_DF["domain_pr"] = feature_DF.apply(
+        lambda x: within_approach_domain_pr[x["approach"]][x["domain"]], axis=1)
+    feature_DF["overall_pr"] = feature_DF.apply(
+        lambda x: within_approach_domain_pr[x["approach"]][x["domain"]] * x["approach_pr"], axis=1)
+    feature_DF["domain_and_pr"] = feature_DF.apply(
+        lambda x: f"{x['domain']}<br>({x['domain_pr']:.1f}%)" if x['overall_pr'] > 300 
+        else f"{x['domain']} ({x['domain_pr']:.1f}%)", axis=1)
+    
     return feature_DF
 
 def build_sunburst_data(feature_df, parent_col="approach_and_pr", label_col="domain_and_pr"):
-    labels, parents, values, colors = [], [], [], []
+    labels, parents, values, colors, ids = [], [], [], [], []
     color_dict = {
         "MRI":       "#4C6B8A",  # Deep muted blue
         "EEG":       "#6FAE9E",  # Balanced teal    
@@ -620,6 +630,7 @@ def build_sunburst_data(feature_df, parent_col="approach_and_pr", label_col="dom
         labels.append(approach_label)
         parents.append("") # root
         values.append(count)
+        ids.append(approach_label) 
         approach_label_clean = approach_label.split("<br>")[0].split(" (")[0]
         colors.append(color_dict.get(approach_label_clean))
 
@@ -627,10 +638,11 @@ def build_sunburst_data(feature_df, parent_col="approach_and_pr", label_col="dom
         labels.append(domain_label)
         parents.append(approach_label)
         values.append(count)
+        ids.append(f"{approach_label}/{domain_label}")
         domain_label_clean = domain_label.split("<br>")[0].split(" (")[0]
         colors.append(color_dict.get(domain_label_clean))
 
-    return labels, parents, values, colors
+    return labels, parents, values, colors, ids
 
 def plot_feature_sunburst(feature_DF, fig_title, output_path, num=False, overwrite=False):
     '''
@@ -640,13 +652,17 @@ def plot_feature_sunburst(feature_DF, fig_title, output_path, num=False, overwri
         output_path = output_path.replace(".png", " (num).png")
     if (not os.path.exists(output_path)) or overwrite:
         if not num:
-            labels, parents, values, colors = build_sunburst_data(feature_DF)
+            labels, parents, values, colors, ids = build_sunburst_data(feature_DF)
         else:
-            labels, parents, values, colors = build_sunburst_data(
+            labels, parents, values, colors, ids = build_sunburst_data(
                 feature_DF, "approach_and_num", "domain_and_num"
             )
         fig = go.Figure(go.Sunburst(
-            labels=labels, parents=parents, values=values, marker=dict(colors=colors),
+            labels=labels, 
+            parents=parents, 
+            values=values, 
+            marker=dict(colors=colors), 
+            ids=ids, 
             branchvalues="total"
         ))
         fig.update_layout(
@@ -682,20 +698,20 @@ def plot_many_feature_sunbursts(feature_DF_dict, fig_title, subplot_annots, outp
             c = (x % 2) + 1
             r = (x // 2) + 1
             if not num:
-                labels, parents, values, colors = build_sunburst_data(feature_DF)
+                labels, parents, values, colors, ids = build_sunburst_data(feature_DF)
             else:
-                labels, parents, values, colors = build_sunburst_data(
+                labels, parents, values, colors, ids = build_sunburst_data(
                     feature_DF, "approach_and_num", "domain_and_num"
                 )
             sunburst_fig = go.Figure(go.Sunburst(
-                labels=labels, parents=parents, values=values, marker=dict(colors=colors),
+                labels=labels, 
+                parents=parents, 
+                values=values, 
+                marker=dict(colors=colors), 
+                ids=ids, 
                 branchvalues="total"
             ))
             sunburst_fig.update_layout(width=500, height=500)
-            # sunburst_fig = px.sunburst(
-            #     feature_DF, path=["approach_and_pr", "domain_and_pr"], 
-            #     maxdepth=2, width=500, height=500
-            # )
             fig.add_trace(
                 sunburst_fig.data[0], row=r, col=c
             )
@@ -981,8 +997,8 @@ def main():
             fig_title=f"{ori_name[:3]}", 
             subplot_annots=subplot_annots, 
             output_path=fp, 
-            # num=True, 
-            overwrite=True # args.overwrite
+            num=True, 
+            overwrite=args.overwrite
         )
         
         ## One sunburst chart per group:
@@ -991,8 +1007,8 @@ def main():
                 feature_DF=feature_DF, 
                 fig_title=fig_titles[group_name], 
                 output_path=fp.replace(".png", f" ({group_name}).png"), 
-                # num=True, 
-                overwrite=True # args.overwrite
+                num=True, 
+                overwrite=args.overwrite
             )
 
 ## Finally: ---------------------------------------------------------------------------
