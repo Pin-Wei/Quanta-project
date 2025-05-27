@@ -729,7 +729,7 @@ def main():
         "FeatureSelectionModel": config.feature_selection_model, 
         "FeatureSelectionUsePCA": not args.no_pca,
         "FeatureExplainedRatio": config.explained_ratio, 
-        "FeatureNum": config.feature_num if not args.no_pca else None, 
+        "FeatureNum": constant.feature_num if not args.no_pca else None, 
         "IncludedOptimizationModels": print_included_models, 
         "SkippedIterationNum": args.ignore, 
         "AgeCorrectionGroups": pad_age_groups
@@ -899,7 +899,7 @@ def main():
                                     X=data_dict["X_train"].loc[:, included_features], 
                                     y=data_dict["y_train"], 
                                     model_name=config.feature_selection_model, 
-                                    no_pca=config.no_pca, 
+                                    no_pca=args.no_pca, 
                                     explained_ratio=config.explained_ratio, 
                                     feature_num=constant.feature_num, 
                                     seed=seed
