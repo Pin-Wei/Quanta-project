@@ -109,7 +109,7 @@ def load_description(config):
                 [ int(x.split("-")[1]) for x in self.age_group_labels[:-1] ] + 
                 [ np.inf ]
             )
-            self.label_cols = ["AgeGroup", "Sex"] if self.sep_sex else ["AgeGroup"]
+            self.label_cols = ["Sex", "AgeGroup"] if self.sep_sex else ["AgeGroup"]
             if self.sep_sex:
                 self.label_list = list(itertools.product(self.age_group_labels, ["M", "F"]))
             else:
@@ -311,26 +311,27 @@ def plot_data_dist(data_DF, age_group, sex, selected_features, output_path,
 
     return targ_col_list
 
-def save_model_info(result_DF, label_cols, output_path, overwrite=False):
+def save_model_info(result_DF, label_cols, desc, output_path, overwrite=False):
     '''
     Save the model types and feature numbers to a .csv table.
     <no returns>
     '''
     if (not os.path.exists(output_path)) or overwrite:
         result_DF["Info"] = result_DF.apply(
-            lambda x: f"{x['Model']}_{x['NumberOfFeatures']}", axis=1
+            lambda x: f"{x['Model']} ({x['NumberOfFeatures']})", axis=1
         )
-        model_info = (result_DF
+        (result_DF
             .loc[:, label_cols + ["Type", "Info"]]
-            .drop_duplicates()
+            .drop_duplicates() 
             .pivot(index = label_cols, 
                    columns = "Type", 
                    values = "Info")
+            .loc[:, desc.feature_orientations] # re-order
+            .to_csv(output_path)
         )
-        model_info.to_csv(output_path)
         print(f"\nModel types and feature numbers are saved to:\n{output_path}")
 
-def save_discriptive_table(DF, output_path, overwrite=False):
+def save_discriptive_table(DF, label_cols, output_path, overwrite=False):
     '''
     Save the median and standard deviation of the data to a .csv table.
     # <previous returns>:
@@ -338,17 +339,15 @@ def save_discriptive_table(DF, output_path, overwrite=False):
     # - stats_table: Table with median and standard deviation of the data.
     '''
     if (not os.path.exists(output_path)) or overwrite:
-        info_DF = (DF
-            .loc[:, ["SID", "Age", "Sex", "AgeGroup"]]
+        (DF
+            .loc[:, ["SID", "Age"] + label_cols]
             .drop_duplicates("SID")
-        )
-        stats_table = (info_DF
-            .groupby(["Sex", "AgeGroup"])["Age"]
+            .groupby(label_cols)["Age"]
             .agg(["count", "median", "std"])
             .rename(columns = {"count": "N", "median": "Median", "std": "STD"})
             .reset_index()
+            .to_csv(output_path, index=False)
         )
-        stats_table.to_csv(output_path, index=False)
         print(f"\nData median and std are saved to:\n{output_path}")
 
 def modify_DF(result_DF, desc):
@@ -377,13 +376,13 @@ def modify_DF(result_DF, desc):
     )
     long_result_DF["PAD_abs_value"] = long_result_DF["PAD_value"].abs()
 
-    long_result_DF = long_result_DF.sort_values(by=["Sex", "AgeGroup"], ascending=False)
+    long_result_DF = long_result_DF.sort_values(by=desc.label_cols, ascending=False)
     if desc.sep_sex:
         long_result_DF["AgeSex"] = long_result_DF["AgeGroup"] + "_" + long_result_DF["Sex"]
 
     return long_result_DF
 
-def plot_pad_bars(long_result_DF, x_lab, output_path, overwrite=False):
+def plot_pad_bars(long_result_DF, x_lab, output_path, pure_plot=False, overwrite=False):
     '''
     Plot the PAD values.
     <no returns>
@@ -391,12 +390,23 @@ def plot_pad_bars(long_result_DF, x_lab, output_path, overwrite=False):
     if (not os.path.exists(output_path)) or overwrite:
         sns.set_theme(style="whitegrid")
         sns.set_context("talk", font_scale=1.2)
+        df = long_result_DF.copy(deep=True) # avoid modifying the original DataFrame
+        df[x_lab] = df[x_lab].map(lambda x: x.replace("all_", "")) # for better x-axis labels
         g = sns.catplot(
-            data=long_result_DF, kind="bar",
+            data=df, kind="bar",
             x=x_lab, y="PAD_abs_value", hue="PAD_type", col="Type", dodge=True, 
-            errorbar="se", palette="dark", alpha=.6, height=6
+            errorbar="se", palette="dark", alpha=.6, height=6, aspect=1
         )
-        g.set_axis_labels("", "PAD Value")
+        if pure_plot:
+            g.legend.remove()
+            g.set_axis_labels("", "")
+            for ax in g.axes.flatten():
+                ax.set_ylim(0, 14) # for consistency across versions
+                ax.set_title("")
+                ax.tick_params(axis='x', labelsize=24)
+            plt.tight_layout()
+        else:
+            g.set_axis_labels("", "PAD Value")
         plt.savefig(output_path)
         print(f"\nBar plot of the PAD values is saved to:\n{output_path}")
         plt.close()
@@ -508,7 +518,7 @@ def format_p(p):
     else:
         return f"p = {p:.3f}".lstrip('0')
 
-def plot_scatter_from_corr(corr_DF, group_name, wide_sub_DF, t1, t2, p_apply, 
+def plot_scatter_from_corr(corr_DF, group_name, wide_sub_DF, t1, t2, grouping_col, p_apply, 
                            output_path, overwrite=False, 
                            font_scale=1.2, figsize=(5, 5), dpi=500):
     '''
@@ -531,9 +541,10 @@ def plot_scatter_from_corr(corr_DF, group_name, wide_sub_DF, t1, t2, p_apply,
         g.refline(x=0, color='g')
         g.refline(y=0, color='g')
 
-        group_corr_df = corr_DF.query("AgeSex == @group_name & X == @t1 & Y == @t2")
+        corr_DF = corr_DF[corr_DF[grouping_col] == group_name]
+        group_corr_df = corr_DF.query("X == @t1 & Y == @t2")
         if group_corr_df.empty:
-            group_corr_df = corr_DF.query("AgeSex == @group_name & X == @t2 & Y == @t1")
+            group_corr_df = corr_DF.query("X == @t2 & Y == @t1")
             
         N = group_corr_df["n"].iloc[0]
         r = group_corr_df["r"].iloc[0]
@@ -553,7 +564,7 @@ def make_feature_DF(ori_name, feature_list, domain_approach_mapping):
     '''
     ## Add domain and approach information:
     if ori_name == "STRUCTURE":
-        domains = ["GM", "WM"]
+        domains = ["GM", "WM", "FA"]
     else:
         domains = domain_approach_mapping[ori_name]["domains"]
     approaches = domain_approach_mapping[ori_name]["approaches"]
@@ -569,29 +580,23 @@ def make_feature_DF(ori_name, feature_list, domain_approach_mapping):
                         })
     feature_DF = pd.DataFrame(dict_list)
 
-    ## Add percentage information:
-    main_pr = feature_DF["approach"].value_counts(normalize=True) * 100
-    feature_DF["approach_pr"] = feature_DF["approach"].map(main_pr)
-    feature_DF["approach_and_pr"] = feature_DF.apply(
-        lambda row: f"{row['approach']}<br>({row['approach_pr']:.1f}%)"
-        if row['approach_pr'] > 7 else f"{row['approach']} ({row['approach_pr']:.1f}%)", 
-        axis=1
-    )
-    group_pr = feature_DF.groupby("approach")["domain"].value_counts(normalize=True) * 100
-    feature_DF["domain_pr"] = feature_DF.apply(
-        lambda row: group_pr[row["approach"]][row["domain"]], axis=1
-    )
-    feature_DF["overall_pr"] = feature_DF.apply(
-        lambda row: group_pr[row["approach"]][row["domain"]] * row["approach_pr"], axis=1
-    )
-    feature_DF["domain_and_pr"] = feature_DF.apply(
-        lambda row: f"{row['domain']}<br>({row['domain_pr']:.1f}%)" 
-        if row['overall_pr'] > 300 else f"{row['domain']} ({row['domain_pr']:.1f}%)", 
-        axis=1
-    )    
+    ## Add count and proportion information:
+    approach_num = feature_DF["approach"].value_counts()
+    approach_pr = feature_DF["approach"].value_counts(normalize=True) * 100
+    within_approach_domain_num = feature_DF.groupby("approach")["domain"].value_counts()   
+    within_approach_domain_pr = feature_DF.groupby("approach")["domain"].value_counts(normalize=True) * 100
+    feature_DF["approach_num"] = feature_DF["approach"].map(approach_num)
+    feature_DF["approach_and_num"] = feature_DF.apply(lambda x: f"{x['approach']} ({x['approach_num']})", axis=1)
+    feature_DF["approach_pr"] = feature_DF["approach"].map(approach_pr)
+    feature_DF["approach_and_pr"] = feature_DF.apply(lambda x: f"{x['approach']}<br>({x['approach_pr']:.1f}%)" if x['approach_pr'] > 7 else f"{x['approach']} ({x['approach_pr']:.1f}%)", axis=1)
+    feature_DF["domain_num"] = feature_DF.apply(lambda x: within_approach_domain_num[x["approach"]][x["domain"]], axis=1)
+    feature_DF["domain_and_num"] = feature_DF.apply(lambda x: f"{x['domain']} ({x['domain_num']})", axis=1)  
+    feature_DF["domain_pr"] = feature_DF.apply(lambda x: within_approach_domain_pr[x["approach"]][x["domain"]], axis=1)
+    feature_DF["overall_pr"] = feature_DF.apply(lambda x: within_approach_domain_pr[x["approach"]][x["domain"]] * x["approach_pr"], axis=1)
+    feature_DF["domain_and_pr"] = feature_DF.apply(lambda x: f"{x['domain']}<br>({x['domain_pr']:.1f}%)" if x['overall_pr'] > 300 else f"{x['domain']} ({x['domain_pr']:.1f}%)", axis=1)    
     return feature_DF
 
-def build_sunburst_data(feature_df):
+def build_sunburst_data(feature_df, parent_col="approach_and_pr", label_col="domain_and_pr"):
     labels, parents, values, colors = [], [], [], []
     color_dict = {
         "MRI":       "#4C6B8A",  # Deep muted blue
@@ -600,38 +605,46 @@ def build_sunburst_data(feature_df):
         "STRUCTURE": "#B2C8DF",  # Pale icy blue-gray
         "GM":        "#CFCFC4",  # Light gray
         "WM":        "#D7E3F4",  # Almost white blue 
+        "FA":        "#F2D3C0",  # Light peachy beige
         "MEMORY":    "#A5C9B3",  # Calm mint sage
         "MOTOR":     "#F6A96C",  # Balanced warm orange
         "LANGUAGE":  "#A7A1D0"   # Muted violet blue
     }
     approach_counts = (
-        feature_df["approach_and_pr"].value_counts().to_dict()
+        feature_df[parent_col].value_counts().to_dict()
     )
     domain_counts = (
-        feature_df.groupby(["approach_and_pr", "domain_and_pr"]).size().to_dict()
+        feature_df.groupby([parent_col, label_col]).size().to_dict()
     )
     for approach_label, count in approach_counts.items():
         labels.append(approach_label)
         parents.append("") # root
         values.append(count)
-        approach_label_clean = approach_label.split(" (")[0]
+        approach_label_clean = approach_label.split("<br>")[0].split(" (")[0]
         colors.append(color_dict.get(approach_label_clean))
 
     for (approach_label, domain_label), count in domain_counts.items():
         labels.append(domain_label)
         parents.append(approach_label)
         values.append(count)
-        domain_label_clean = domain_label.split(" (")[0]
+        domain_label_clean = domain_label.split("<br>")[0].split(" (")[0]
         colors.append(color_dict.get(domain_label_clean))
 
     return labels, parents, values, colors
 
-def plot_feature_sunburst(feature_DF, fig_title, output_path, overwrite=False):
+def plot_feature_sunburst(feature_DF, fig_title, output_path, num=False, overwrite=False):
     '''
     Plot the sunburst plot for the features in the given DataFrame.
     '''
+    if num:
+        output_path = output_path.replace(".png", " (num).png")
     if (not os.path.exists(output_path)) or overwrite:
-        labels, parents, values, colors = build_sunburst_data(feature_DF)
+        if not num:
+            labels, parents, values, colors = build_sunburst_data(feature_DF)
+        else:
+            labels, parents, values, colors = build_sunburst_data(
+                feature_DF, "approach_and_num", "domain_and_num"
+            )
         fig = go.Figure(go.Sunburst(
             labels=labels, parents=parents, values=values, marker=dict(colors=colors),
             branchvalues="total"
@@ -648,11 +661,13 @@ def plot_feature_sunburst(feature_DF, fig_title, output_path, overwrite=False):
         print(f"\nSunburst plot is saved to:\n{output_path}")
 
 def plot_many_feature_sunbursts(feature_DF_dict, fig_title, subplot_annots, output_path, 
-                                overwrite=False, ncol=None, nrow=None):
+                                num=False, overwrite=False, ncol=None, nrow=None):
     '''
     Plot the sunburst plots for each dataframe in the dictionary, 
     whose keys are the group names.
     '''
+    if num:
+        output_path = output_path.replace(".png", " (num).png")
     if (not os.path.exists(output_path)) or overwrite:
         if ncol is None:
             ncol = 2
@@ -666,7 +681,12 @@ def plot_many_feature_sunbursts(feature_DF_dict, fig_title, subplot_annots, outp
         for x, (group_name, feature_DF) in enumerate(feature_DF_dict.items()):
             c = (x % 2) + 1
             r = (x // 2) + 1
-            labels, parents, values, colors = build_sunburst_data(feature_DF)
+            if not num:
+                labels, parents, values, colors = build_sunburst_data(feature_DF)
+            else:
+                labels, parents, values, colors = build_sunburst_data(
+                    feature_DF, "approach_and_num", "domain_and_num"
+                )
             sunburst_fig = go.Figure(go.Sunburst(
                 labels=labels, parents=parents, values=values, marker=dict(colors=colors),
                 branchvalues="total"
@@ -701,7 +721,7 @@ def plot_many_feature_sunbursts(feature_DF_dict, fig_title, subplot_annots, outp
 def plot_color_legend(color_dict, output_path, 
                       fig_size=(4.5, 1.5), n_cols=3, box_size=0.3, overwrite=False):
     '''
-    Plot a color legend for the feature sunburst plots.
+    Plot a color legend (default for the feature sunburst plots).
     '''
     n_rows = (len(color_dict) + n_cols - 1) // n_cols
 
@@ -791,20 +811,20 @@ def main():
 
     ## Aggregate model types and feature numbers (save to a table):
     save_model_info(
-        result_DF, desc.label_cols,
+        result_DF, desc.label_cols, desc, 
         os.path.join(config.output_folder, config.model_info_filename), 
         overwrite=args.overwrite
     )
 
     ## Aggregate medians and STDs of ages for each participant group (save to a table):
     save_discriptive_table(
-        result_DF, 
+        result_DF, desc.label_cols,
         os.path.join(config.output_folder, config.disc_table_filename), 
         overwrite=args.overwrite
     )    
     if desc.traintest:
         save_discriptive_table(
-            trainset_info_DF, 
+            trainset_info_DF, desc.label_cols,
             os.path.join(config.output_folder, config.disc_table_filename.replace(".csv", " (training set).csv")), 
             overwrite=args.overwrite
         )
@@ -815,10 +835,18 @@ def main():
     ## Plot PAD bars: 
     if args.ignore_all:
         config.pad_barplot_filename = config.pad_barplot_filename.replace(".png", " (ignore 'All').png")
+    fp = os.path.join(config.output_folder, config.pad_barplot_filename)
     plot_pad_bars(
-        long_result_DF, grouping_col, 
-        os.path.join(config.output_folder, config.pad_barplot_filename), 
-        overwrite=args.overwrite
+        long_result_DF, grouping_col, fp, overwrite=args.overwrite
+    )
+    fp2 = fp.replace(".png", " (pure).png")
+    plot_pad_bars(
+        long_result_DF, grouping_col, fp2, pure_plot=True, overwrite=args.overwrite
+    )
+    plot_color_legend(
+        color_dict=dict(zip(["PAD", "PAD_ac"], sns.color_palette("dark", 2))), 
+        output_path=os.path.join(config.output_folder, "PAD color legends.png"),
+        fig_size=(2, .5), n_cols=2, box_size=0.5, overwrite=args.overwrite
     )
 
     ## Pivot data for calculating correlations:
@@ -904,7 +932,7 @@ def main():
     for group_name, wide_sub_DF in wide_sub_DF_dict.items():
         for t1, t2 in [("BEH", "FUN"), ("BEH", "STR"), ("FUN", "STR")]:
             plot_scatter_from_corr(
-                corr_DF, group_name, wide_sub_DF, t1, t2, 
+                corr_DF, group_name, wide_sub_DF, t1, t2, grouping_col, 
                 p_apply="p-corr" if args.p_adjust else "p-unc", 
                 output_path=os.path.join(config.output_folder, config.pad_scatter_fn_template.replace("<GroupName>", group_name).replace("<Type1>", t1).replace("<Type2>", t2)), 
                 overwrite=args.overwrite
@@ -952,8 +980,9 @@ def main():
             feature_DF_dict=feature_DF_dict, 
             fig_title=f"{ori_name[:3]}", 
             subplot_annots=subplot_annots, 
-            output_path=fp,
-            overwrite=args.overwrite
+            output_path=fp, 
+            # num=True, 
+            overwrite=True # args.overwrite
         )
         
         ## One sunburst chart per group:
@@ -961,8 +990,9 @@ def main():
             plot_feature_sunburst(
                 feature_DF=feature_DF, 
                 fig_title=fig_titles[group_name], 
-                output_path=fp.replace(".png", f" ({group_name}).png"),
-                overwrite=args.overwrite
+                output_path=fp.replace(".png", f" ({group_name}).png"), 
+                # num=True, 
+                overwrite=True # args.overwrite
             )
 
 ## Finally: ---------------------------------------------------------------------------

@@ -31,7 +31,7 @@ import json
 
 parser = argparse.ArgumentParser(description="")
 ## How to split data into groups:
-parser.add_argument("-age", "--age_method", type=int, default=1, 
+parser.add_argument("-age", "--age_method", type=int, default=2, 
                     help="The method to define age groups (0: 'no_cut', 1: 'cut_at_40', 2: 'cut_44-45', 3: 'wais_8_seg').")
 parser.add_argument("-sex", "--by_gender", type=int, default=1, 
                     help="Whether to separate the data by gender (0: False, 1: True).")
@@ -60,6 +60,8 @@ parser.add_argument("-psf", "--preselected_feature_folder", type=str, default=No
                     help="The folder where the result files (.json) containing the selected features are stored.")
 parser.add_argument("-fsm", "--feature_selection_model", type=int, default=0, 
                     help="The model to use for feature selection (0: 'LassoCV', 1: 'RF', 2: 'XGBR').")
+parser.add_argument("--no_pca", action="store_true", default=False, 
+                    help="Do not use PCA for feature selection.")
 parser.add_argument("-epr", "--explained_ratio", type=float, default=0.9, 
                     help="The variance to be explained by the selected features.")
 ## Model training:
@@ -85,7 +87,10 @@ class Config:
         self.by_gender = [False, True][args.by_gender]
         self.testset_ratio = args.testset_ratio
         self.feature_selection_model = ["LassoCV", "RF", "XGBR"][args.feature_selection_model]
-        self.explained_ratio = args.explained_ratio        
+        if not args.no_pca:
+            self.explained_ratio = args.explained_ratio
+        else:
+            self.explained_ratio = None
         self.pad_method = ["wais_8_seg", "every_5_yrs"][0]
 
         if args.use_prepared_data:
@@ -190,11 +195,13 @@ class Constants:
                 "bootstrap": 15
             }, 
             "cut_44-45": {
-                "SMOTENC": 60*4, 
-                "downsample": 15*4, 
-                "bootstrap": 15*4
+                "SMOTENC": 240, 
+                "downsample": 78, 
+                "bootstrap": 78
             }
         }
+        ## The number of features to select (if not using PCA):
+        self.feature_num = 50
 
 ## Functions: =========================================================================
 
@@ -364,7 +371,7 @@ def preprocess_grouped_dataset(X, y, ids, testset_ratio, seed):
         "id_test": id_test.reset_index(drop=True)
     }
 
-def feature_selection(X, y, model_name, explained_ratio, seed, nfold=5):
+def feature_selection(X, y, model_name, no_pca, explained_ratio, feature_num, seed, nfold=5):
     '''
     Inputs:
     - X (pd.DataFrame): Feature matrix.
@@ -401,15 +408,16 @@ def feature_selection(X, y, model_name, explained_ratio, seed, nfold=5):
     ]
 
     # Apply PCA to determine the number of features that explain the desired variance
-    pca = PCA()
-    pca.fit(X[ranked_features], y)
-    cumulative_variance = np.cumsum(pca.explained_variance_ratio_)
+    if not no_pca:
+        pca = PCA()
+        pca.fit(X[ranked_features], y)
+        cumulative_variance = np.cumsum(pca.explained_variance_ratio_)
 
-    # Find the number of components that explain the desired variance
-    num_components = np.argmax(cumulative_variance >= explained_ratio) + 1
+        # Find the number of components that explain the desired variance
+        feature_num = np.argmax(cumulative_variance >= explained_ratio) + 1
 
     # Select the top features based on the number of components
-    ranked_selected_features = ranked_features[:num_components]
+    ranked_selected_features = ranked_features[:feature_num]
 
     return list(ranked_selected_features)
 
@@ -719,7 +727,9 @@ def main():
         "UsePreviouslySelectedFeatures": args.preselected_feature_folder, 
         "FeatureOrientations": list(constant.domain_approach_mapping.keys()),
         "FeatureSelectionModel": config.feature_selection_model, 
+        "FeatureSelectionUsePCA": not args.no_pca,
         "FeatureExplainedRatio": config.explained_ratio, 
+        "FeatureNum": config.feature_num if not args.no_pca else None, 
         "IncludedOptimizationModels": print_included_models, 
         "SkippedIterationNum": args.ignore, 
         "AgeCorrectionGroups": pad_age_groups
@@ -889,7 +899,9 @@ def main():
                                     X=data_dict["X_train"].loc[:, included_features], 
                                     y=data_dict["y_train"], 
                                     model_name=config.feature_selection_model, 
+                                    no_pca=config.no_pca, 
                                     explained_ratio=config.explained_ratio, 
+                                    feature_num=constant.feature_num, 
                                     seed=seed
                                 )
 
