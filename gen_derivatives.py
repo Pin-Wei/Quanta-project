@@ -562,25 +562,60 @@ def make_feature_DF(ori_name, feature_list, domain_approach_mapping):
     Make a DataFrame containing the domain and approach labels for each feature, 
     as well as the proportion information of each domain and approach.
     '''
-    ## Add domain and approach information:
-    if ori_name == "STRUCTURE":
-        domains = ["GM", "WM", "FA"]
-    else:
-        domains = domain_approach_mapping[ori_name]["domains"]
-    approaches = domain_approach_mapping[ori_name]["approaches"]
-    
-    dict_list = []    
+    dict_list = []
     for feature in feature_list:
-        for domain in domains:
-            if domain in feature:
-                for approach in approaches: 
-                    if approach in feature:
-                        dict_list.append({
-                            "domain": domain, "approach": approach, "feature": feature
-                        })
-    feature_DF = pd.DataFrame(dict_list)
 
-    ## Add count and proportion information:
+        if "MRI" in feature:
+            dat_type, task, method, cond, hemi, region, var_name = feature.split("_")
+            
+            if dat_type == "STRUCTURE":
+                if ori_name == "ALL": 
+                    dict_list.append({
+                        "domain": cond, # "GM", "WM", or "NULL", 
+                        "approach": "STR", 
+                        "feature": feature
+                    })
+                else: 
+                    dict_list.append({
+                        "domain": var_name, # "VOLUME", "ThickAvg", or "FA"
+                        "approach": cond, # "GM", "WM", or "NULL"
+                        "feature": feature
+                    })
+            else: # "FUNCTIONAL"
+                dict_list.append({
+                    "domain": dat_type, # "MEMORY", "MOTOR", or "LANGUAGE"
+                    "approach": "MRI", 
+                    # "task": task, # "SPEECHCOMP", "WORDNAME", "MST", or "GFORCE"
+                    "feature": feature
+                })
+
+        elif "EEG" in feature:
+            dat_type, task, method, cond, hemi, region, time_freq_var = feature.split("_")[:7]
+            
+            dict_list.append({
+                "domain": dat_type, # "MEMORY", "MOTOR", or "LANGUAGE"
+                "approach": "EEG", 
+                # "task": task, # "EXCLUSION", "OSPAN", "GOFITTS", or "BILPRESS"
+                "feature": feature
+            })
+
+        elif "BEH" in feature: 
+            dat_type, task, method, cond, var_name = feature.split("_")
+
+            if ori_name == "ALL": 
+                dict_list.append({
+                    "domain": dat_type, # "MEMORY", "MOTOR", or "LANGUAGE"
+                    "approach": "BEH", 
+                    "feature": feature
+                })
+            else: 
+                dict_list.append({
+                    "domain": task, 
+                    "approach": dat_type, # "MEMORY", "MOTOR", or "LANGUAGE"
+                    "feature": feature
+                })
+
+    feature_DF = pd.DataFrame(dict_list)
     approach_num = feature_DF["approach"].value_counts()
     approach_pr = feature_DF["approach"].value_counts(normalize=True) * 100
     within_approach_domain_num = feature_DF.groupby("approach")["domain"].value_counts()   
@@ -606,20 +641,60 @@ def make_feature_DF(ori_name, feature_list, domain_approach_mapping):
     
     return feature_DF
 
-def build_sunburst_data(feature_df, parent_col="approach_and_pr", label_col="domain_and_pr"):
+def build_sunburst_data(ori_name, feature_df, parent_col, label_col):
     labels, parents, values, colors, ids = [], [], [], [], []
     color_dict = {
-        "MRI":       "#4C6B8A",  # Deep muted blue
-        "EEG":       "#6FAE9E",  # Balanced teal    
-        "BEH":       "#F9D66B",  # Brighter mustard yellow
-        "STRUCTURE": "#B2C8DF",  # Pale icy blue-gray
-        "GM":        "#CFCFC4",  # Light gray
-        "WM":        "#D7E3F4",  # Almost white blue 
-        "FA":        "#F2D3C0",  # Light peachy beige
-        "MEMORY":    "#A5C9B3",  # Calm mint sage
-        "MOTOR":     "#F6A96C",  # Balanced warm orange
-        "LANGUAGE":  "#A7A1D0"   # Muted violet blue
-    }
+        "STRUCTURE": {
+        ## Parents
+            "GM":         "#305973",  # Deep slate blue
+            "WM":         "#6FAE9E",  # Deep teal
+            "NULL":       "#6A4F83",  # Deep muted violet
+        ## Children
+            "VOLUME":     "#A5D9D4",  # Light teal
+            "ThickAvg":   "#B2C8DF",  # Icy blue-gray
+            "ThickStd":   "#B7B1D8",  # Muted lavender
+            "FA":         "#F1D4B8"   # Soft peach blush
+        },
+        "BEH": {
+        ## Parents
+            "MEMORY":     "#2E7D7E",  # Deep teal
+            "MOTOR":      "#E66A28",  # Deep orange
+            "LANGUAGE":   "#6A4F83",  # Deep muted violet
+        ## Children
+            "EXCLUSION":  "#7FC5C0",  # Light teal
+            "OSPAN":      "#A5D9D4",  # Lighter teal
+            "MST":        "#D6ECEA",  # Lightest teal
+            "GFORCE":     "#FFA46B",  # Light orange
+            "GOFITTS":    "#FFBD85",  # Lighter orange
+            "BILPRESS":   "#FFDAB3",  # Lightest orange
+            "SPEECHCOMP": "#9D7FBF",  # Light muted violet
+            "WORDNAME":   "#C3B2DB"   # Lightest muted violet
+        },
+        "FUNCTIONAL": {
+        ## Parents
+            "MRI":        "#3A4F7A",  # Deep indigo blue
+            "EEG":        "#6FAE9E",  # Deep teal
+        ## Children
+            "MEMORY":     "#A5D9D4",  # Light teal
+            "MOTOR":      "#FFA46B",  # Light orange
+            "LANGUAGE":   "#C3B2DB"   # Light muted violet
+        },
+        "ALL": {
+        ## Parents
+            "STR":        "#4E5D6C",  # Deep gray blue
+            "MRI":        "#3A4F7A",  # Deep indigo blue
+            "EEG":        "#6FAE9E",  # Deep teal
+            "BEH":        "#E67E22",  # Deep orange
+        ## Children
+            "GM":         "#B2C8DF",  # Pale icy blue-gray
+            "WM":         "#CBD5C0",  # Soft pale sage green
+            "NULL":       "#9AA0B5",  # Slate gray
+            "MEMORY":     "#A5C9B3",  # Calm mint green
+            "MOTOR":      "#F6A96C",  # Balanced warm orange
+            "LANGUAGE":   "#B7B1D8"   # Muted lavender
+        }
+    }[ori_name]
+
     approach_counts = (
         feature_df[parent_col].value_counts().to_dict()
     )
@@ -632,7 +707,7 @@ def build_sunburst_data(feature_df, parent_col="approach_and_pr", label_col="dom
         values.append(count)
         ids.append(approach_label) 
         approach_label_clean = approach_label.split("<br>")[0].split(" (")[0]
-        colors.append(color_dict.get(approach_label_clean))
+        colors.append(color_dict.get(approach_label_clean, "#D3D3D3"))  # fallback: light gray
 
     for (approach_label, domain_label), count in domain_counts.items():
         labels.append(domain_label)
@@ -640,22 +715,24 @@ def build_sunburst_data(feature_df, parent_col="approach_and_pr", label_col="dom
         values.append(count)
         ids.append(f"{approach_label}/{domain_label}")
         domain_label_clean = domain_label.split("<br>")[0].split(" (")[0]
-        colors.append(color_dict.get(domain_label_clean))
+        colors.append(color_dict.get(domain_label_clean, "#D3D3D3"))  # fallback: light gray
 
     return labels, parents, values, colors, ids
 
-def plot_feature_sunburst(feature_DF, fig_title, output_path, num=False, overwrite=False):
+def plot_feature_sunburst(ori_name, feature_DF, fig_title, output_path, num=False, overwrite=False):
     '''
     Plot the sunburst plot for the features in the given DataFrame.
     '''
     if num:
         output_path = output_path.replace(".png", " (num).png")
     if (not os.path.exists(output_path)) or overwrite:
-        if not num:
-            labels, parents, values, colors, ids = build_sunburst_data(feature_DF)
+        if num:
+            labels, parents, values, colors, ids = build_sunburst_data(
+                ori_name, feature_DF, "approach_and_num", "domain_and_num"
+            )
         else:
             labels, parents, values, colors, ids = build_sunburst_data(
-                feature_DF, "approach_and_num", "domain_and_num"
+                ori_name, feature_DF, "approach_and_pr", "domain_and_pr"
             )
         fig = go.Figure(go.Sunburst(
             labels=labels, 
@@ -676,7 +753,7 @@ def plot_feature_sunburst(feature_DF, fig_title, output_path, num=False, overwri
         plt.close()
         print(f"\nSunburst plot is saved to:\n{output_path}")
 
-def plot_many_feature_sunbursts(feature_DF_dict, fig_title, subplot_annots, output_path, 
+def plot_many_feature_sunbursts(ori_name, feature_DF_dict, fig_title, subplot_annots, output_path, 
                                 num=False, overwrite=False, ncol=None, nrow=None):
     '''
     Plot the sunburst plots for each dataframe in the dictionary, 
@@ -697,11 +774,13 @@ def plot_many_feature_sunbursts(feature_DF_dict, fig_title, subplot_annots, outp
         for x, (group_name, feature_DF) in enumerate(feature_DF_dict.items()):
             c = (x % 2) + 1
             r = (x // 2) + 1
-            if not num:
-                labels, parents, values, colors, ids = build_sunburst_data(feature_DF)
+            if num:
+                labels, parents, values, colors, ids = build_sunburst_data(
+                    ori_name, feature_DF, "approach_and_num", "domain_and_num"
+                )
             else:
                 labels, parents, values, colors, ids = build_sunburst_data(
-                    feature_DF, "approach_and_num", "domain_and_num"
+                    ori_name, feature_DF, "approach_and_pr", "domain_and_pr"
                 )
             sunburst_fig = go.Figure(go.Sunburst(
                 labels=labels, 
@@ -993,6 +1072,7 @@ def main():
         ## One set of sunburst charts per feature type:
         fp = os.path.join(config.output_folder, config.sunburst_fn_template.replace("<FeatureType>", ori_name[:3]))
         plot_many_feature_sunbursts(
+            ori_name=ori_name, 
             feature_DF_dict=feature_DF_dict, 
             fig_title=f"{ori_name[:3]}", 
             subplot_annots=subplot_annots, 
@@ -1004,6 +1084,7 @@ def main():
         ## One sunburst chart per group:
         for group_name, feature_DF in feature_DF_dict.items():
             plot_feature_sunburst(
+                ori_name=ori_name, 
                 feature_DF=feature_DF, 
                 fig_title=fig_titles[group_name], 
                 output_path=fp.replace(".png", f" ({group_name}).png"), 
