@@ -88,6 +88,64 @@ class Config:
         self.pad_scatter_fn_template = f"[scatter] between {self.pad_type} in <GroupName> (<Type1> × <Type2>).png"
         self.sunburst_fn_template    = "[pie] <FeatureType>.png"
 
+class ColorDicts:
+    def __init__(self): 
+        self.pad_bars = {
+            "PAD":    "#219EBC",
+            "PAD_ac": "#FB8500" 
+        }
+        self.sunburst = {
+            "STRUCTURE": {
+            ## Parents
+                "GM":         "#305973",  # Deep slate blue
+                "WM":         "#6FAE9E",  # Deep teal
+                "NULL":       "#6A4F83",  # Deep muted violet
+            ## Children
+                "VOLUME":     "#A5D9D4",  # Light teal
+                "ThickAvg":   "#B2C8DF",  # Icy blue-gray
+                "ThickStd":   "#B7B1D8",  # Muted lavender
+                "FA":         "#F1D4B8"   # Soft peach blush
+            },
+            "BEH": {
+            ## Parents
+                "MEMORY":     "#2E7D7E",  # Deep teal
+                "MOTOR":      "#E66A28",  # Deep orange
+                "LANGUAGE":   "#6A4F83",  # Deep muted violet
+            ## Children
+                "EXCLUSION":  "#7FC5C0",  # Light teal
+                "OSPAN":      "#A5D9D4",  # Lighter teal
+                "MST":        "#D6ECEA",  # Lightest teal
+                "GFORCE":     "#FFA46B",  # Light orange
+                "GOFITTS":    "#FFBD85",  # Lighter orange
+                "BILPRESS":   "#FFDAB3",  # Lightest orange
+                "SPEECHCOMP": "#9D7FBF",  # Light muted violet
+                "WORDNAME":   "#C3B2DB"   # Lightest muted violet
+            },
+            "FUNCTIONAL": {
+            ## Parents
+                "MRI":        "#3A4F7A",  # Deep indigo blue
+                "EEG":        "#6FAE9E",  # Deep teal
+            ## Children
+                "MEMORY":     "#A5D9D4",  # Light teal
+                "MOTOR":      "#FFA46B",  # Light orange
+                "LANGUAGE":   "#C3B2DB"   # Light muted violet
+            },
+            "ALL": {
+            ## Parents
+                "STR":        "#4E5D6C",  # Deep gray blue
+                "MRI":        "#3A4F7A",  # Deep indigo blue
+                "EEG":        "#6FAE9E",  # Deep teal
+                "BEH":        "#E67E22",  # Deep orange
+            ## Children
+                "GM":         "#B2C8DF",  # Pale icy blue-gray
+                "WM":         "#CBD5C0",  # Soft pale sage green
+                "NULL":       "#9AA0B5",  # Slate gray
+                "MEMORY":     "#A5C9B3",  # Calm mint green
+                "MOTOR":      "#F6A96C",  # Balanced warm orange
+                "LANGUAGE":   "#B7B1D8"   # Muted lavender
+            }
+        }
+
 def load_description(config):
     '''
     Load the parameters from the description file and update the description object.
@@ -376,13 +434,55 @@ def modify_DF(result_DF, desc):
     )
     long_result_DF["PAD_abs_value"] = long_result_DF["PAD_value"].abs()
 
-    long_result_DF = long_result_DF.sort_values(by=desc.label_cols)
+    long_result_DF = long_result_DF.sort_values(by=desc.label_cols, ascending=False)
     if desc.sep_sex:
         long_result_DF["AgeSex"] = long_result_DF["AgeGroup"] + "_" + long_result_DF["Sex"]
 
     return long_result_DF
 
-def plot_pad_bars(long_result_DF, x_lab, output_path, pure_plot=False, overwrite=False):
+def plot_pad_bar(long_result_DF, x_lab, color_dict, output_path, 
+                 y_lim=None, overwrite=False):
+    '''
+    Plot the PAD values as a bar plot.
+    '''
+    if (not os.path.exists(output_path)) or overwrite:
+        sns.set_theme(style="whitegrid")
+        sns.set_context("talk", font_scale=1.2)
+        df = long_result_DF.copy(deep=True) # avoid modifying the original DataFrame
+        df[x_lab] = df[x_lab].map(lambda x: x.replace("all_", "")) # for better x-axis labels
+        mean_pad = df[df["PAD_type"] == "PAD"]["PAD_abs_value"].mean()
+        mean_padac = df[df["PAD_type"] == "PAD_ac"]["PAD_abs_value"].mean()
+        g = sns.catplot(
+            data=df, kind="bar", errorbar="se", 
+            x=x_lab, y="PAD_abs_value", hue="PAD_type", hue_order=["PAD", "PAD_ac"], 
+            palette=color_dict, height=6, aspect=1, alpha=.8, dodge=True, legend=False
+        )
+        g.refline(
+            y=mean_padac, color=color_dict["PAD_ac"], linestyle='--'
+        )
+        g.refline(
+            y=mean_pad, color=color_dict["PAD"], linestyle='--'
+        )
+        g.set_axis_labels("", "")
+        g.set(ylim=(0, y_lim)) # for consistency across versions
+        # g.fig.suptitle(
+        #     f"mean PAD = {mean_pad:.2f}, PAD_ac = {mean_padac:.2f}", fontsize=20
+        # )
+        g.fig.text(
+            0.5, 0.1, 
+            f"mean PAD = {mean_pad:.2f}, PAD_ac = {mean_padac:.2f}", 
+            ha='center', va='top', fontsize=22, color="#FF006E"
+        )
+        ax = g.axes.flat[0]
+        ax.tick_params(axis='x', labelsize=20)
+        plt.subplots_adjust(bottom=0.2)
+        # plt.tight_layout()
+        plt.savefig(output_path)
+        print(f"\nBar plot of the PAD values is saved to:\n{output_path}")
+        plt.close()
+
+def plot_pad_bars(long_result_DF, x_lab, color_dict, output_path, 
+                  y_lim=None, overwrite=False):
     '''
     Plot the PAD values.
     <no returns>
@@ -393,20 +493,14 @@ def plot_pad_bars(long_result_DF, x_lab, output_path, pure_plot=False, overwrite
         df = long_result_DF.copy(deep=True) # avoid modifying the original DataFrame
         df[x_lab] = df[x_lab].map(lambda x: x.replace("all_", "")) # for better x-axis labels
         g = sns.catplot(
-            data=df, kind="bar",
-            x=x_lab, y="PAD_abs_value", hue="PAD_type", col="Type", dodge=True, 
-            errorbar="se", palette="dark", alpha=.6, height=6, aspect=1
+            data=df, kind="bar", errorbar="se", 
+            x=x_lab, y="PAD_abs_value", hue="PAD_type", col="Type", 
+            hue_order=["PAD", "PAD_ac"], 
+            col_order=list(df["Type"].unique()).sort(key=lambda x: ["STR", "BEH", "FUN", "ALL"].index(x)), 
+            palette=color_dict, height=6, aspect=1, dodge=True
         )
-        if pure_plot:
-            g.legend.remove()
-            g.set_axis_labels("", "")
-            for ax in g.axes.flatten():
-                ax.set_ylim(0, 14) # for consistency across versions
-                ax.set_title("")
-                ax.tick_params(axis='x', labelsize=24)
-            plt.tight_layout()
-        else:
-            g.set_axis_labels("", "PAD Value")
+        g.set_axis_labels("", "PAD Value")
+        g.set(ylim=(0, y_lim)) 
         plt.savefig(output_path)
         print(f"\nBar plot of the PAD values is saved to:\n{output_path}")
         plt.close()
@@ -641,60 +735,11 @@ def make_feature_DF(ori_name, feature_list, domain_approach_mapping):
     
     return feature_DF
 
-def build_sunburst_data(ori_name, feature_df, parent_col, label_col):
+def build_sunburst_data(feature_df, color_dict, parent_col, label_col):
+    '''
+    Build the data for the sunburst plot from the feature DataFrame.
+    '''
     labels, parents, values, colors, ids = [], [], [], [], []
-    color_dict = {
-        "STRUCTURE": {
-        ## Parents
-            "GM":         "#305973",  # Deep slate blue
-            "WM":         "#6FAE9E",  # Deep teal
-            "NULL":       "#6A4F83",  # Deep muted violet
-        ## Children
-            "VOLUME":     "#A5D9D4",  # Light teal
-            "ThickAvg":   "#B2C8DF",  # Icy blue-gray
-            "ThickStd":   "#B7B1D8",  # Muted lavender
-            "FA":         "#F1D4B8"   # Soft peach blush
-        },
-        "BEH": {
-        ## Parents
-            "MEMORY":     "#2E7D7E",  # Deep teal
-            "MOTOR":      "#E66A28",  # Deep orange
-            "LANGUAGE":   "#6A4F83",  # Deep muted violet
-        ## Children
-            "EXCLUSION":  "#7FC5C0",  # Light teal
-            "OSPAN":      "#A5D9D4",  # Lighter teal
-            "MST":        "#D6ECEA",  # Lightest teal
-            "GFORCE":     "#FFA46B",  # Light orange
-            "GOFITTS":    "#FFBD85",  # Lighter orange
-            "BILPRESS":   "#FFDAB3",  # Lightest orange
-            "SPEECHCOMP": "#9D7FBF",  # Light muted violet
-            "WORDNAME":   "#C3B2DB"   # Lightest muted violet
-        },
-        "FUNCTIONAL": {
-        ## Parents
-            "MRI":        "#3A4F7A",  # Deep indigo blue
-            "EEG":        "#6FAE9E",  # Deep teal
-        ## Children
-            "MEMORY":     "#A5D9D4",  # Light teal
-            "MOTOR":      "#FFA46B",  # Light orange
-            "LANGUAGE":   "#C3B2DB"   # Light muted violet
-        },
-        "ALL": {
-        ## Parents
-            "STR":        "#4E5D6C",  # Deep gray blue
-            "MRI":        "#3A4F7A",  # Deep indigo blue
-            "EEG":        "#6FAE9E",  # Deep teal
-            "BEH":        "#E67E22",  # Deep orange
-        ## Children
-            "GM":         "#B2C8DF",  # Pale icy blue-gray
-            "WM":         "#CBD5C0",  # Soft pale sage green
-            "NULL":       "#9AA0B5",  # Slate gray
-            "MEMORY":     "#A5C9B3",  # Calm mint green
-            "MOTOR":      "#F6A96C",  # Balanced warm orange
-            "LANGUAGE":   "#B7B1D8"   # Muted lavender
-        }
-    }[ori_name]
-
     approach_counts = (
         feature_df[parent_col].value_counts().to_dict()
     )
@@ -719,7 +764,7 @@ def build_sunburst_data(ori_name, feature_df, parent_col, label_col):
 
     return labels, parents, values, colors, ids
 
-def plot_feature_sunburst(ori_name, feature_DF, fig_title, output_path, num=False, overwrite=False):
+def plot_feature_sunburst(feature_DF, color_dict, fig_title, output_path, num=False, overwrite=False):
     '''
     Plot the sunburst plot for the features in the given DataFrame.
     '''
@@ -728,11 +773,11 @@ def plot_feature_sunburst(ori_name, feature_DF, fig_title, output_path, num=Fals
     if (not os.path.exists(output_path)) or overwrite:
         if num:
             labels, parents, values, colors, ids = build_sunburst_data(
-                ori_name, feature_DF, "approach_and_num", "domain_and_num"
+                feature_DF, color_dict, "approach_and_num", "domain_and_num"
             )
         else:
             labels, parents, values, colors, ids = build_sunburst_data(
-                ori_name, feature_DF, "approach_and_pr", "domain_and_pr"
+                feature_DF, color_dict, "approach_and_pr", "domain_and_pr"
             )
         fig = go.Figure(go.Sunburst(
             labels=labels, 
@@ -753,7 +798,7 @@ def plot_feature_sunburst(ori_name, feature_DF, fig_title, output_path, num=Fals
         plt.close()
         print(f"\nSunburst plot is saved to:\n{output_path}")
 
-def plot_many_feature_sunbursts(ori_name, feature_DF_dict, fig_title, subplot_annots, output_path, 
+def plot_many_feature_sunbursts(feature_DF_dict, color_dict, fig_title, subplot_annots, output_path, 
                                 num=False, overwrite=False, ncol=None, nrow=None):
     '''
     Plot the sunburst plots for each dataframe in the dictionary, 
@@ -776,11 +821,11 @@ def plot_many_feature_sunbursts(ori_name, feature_DF_dict, fig_title, subplot_an
             r = (x // 2) + 1
             if num:
                 labels, parents, values, colors, ids = build_sunburst_data(
-                    ori_name, feature_DF, "approach_and_num", "domain_and_num"
+                    feature_DF, color_dict, "approach_and_num", "domain_and_num"
                 )
             else:
                 labels, parents, values, colors, ids = build_sunburst_data(
-                    ori_name, feature_DF, "approach_and_pr", "domain_and_pr"
+                    feature_DF, color_dict, "approach_and_pr", "domain_and_pr"
                 )
             sunburst_fig = go.Figure(go.Sunburst(
                 labels=labels, 
@@ -851,7 +896,8 @@ def main():
 
     desc = load_description(config)
     grouping_col = "AgeSex" if desc.sep_sex else "AgeGroup"
-    
+
+    color_dicts = ColorDicts()
     standardized_features = standardized_feature_list()
     domain_approach_mapping = domain_approach_mapping_dict()
 
@@ -932,14 +978,26 @@ def main():
         config.pad_barplot_filename = config.pad_barplot_filename.replace(".png", " (ignore 'All').png")
     fp = os.path.join(config.output_folder, config.pad_barplot_filename)
     plot_pad_bars(
-        long_result_DF, grouping_col, fp, overwrite=args.overwrite
+        long_result_DF=long_result_DF, 
+        x_lab=grouping_col, 
+        color_dict = color_dicts.pad_bars, 
+        output_path=fp, 
+        overwrite=args.overwrite
     )
-    fp2 = fp.replace(".png", " (pure).png")
-    plot_pad_bars(
-        long_result_DF, grouping_col, fp2, pure_plot=True, overwrite=args.overwrite
-    )
+    for ori_name in desc.feature_orientations: 
+        ori_name= ori_name[:3]
+        fp2 = fp.replace(".png", f" ({ori_name}).png")
+        plot_pad_bar(
+            long_result_DF=long_result_DF.query("Type == @ori_name"), 
+            x_lab=grouping_col, 
+            color_dict = color_dicts.pad_bars, 
+            output_path=fp2, 
+            y_lim={"STR": 9, "BEH": 11, "FUN": 14, "ALL": 11}[ori_name], # manually set after checking the data
+            overwrite=args.overwrite
+        )
     plot_color_legend(
-        color_dict=dict(zip(["PAD", "PAD_ac"], sns.color_palette("dark", 2))), 
+        color_dict = color_dicts.pad_bars, 
+        # color_dict=dict(zip(["PAD", "PAD_ac"], sns.color_dicts("dark", 2))), 
         output_path=os.path.join(config.output_folder, "PAD color legends.png"),
         fig_size=(2, .5), n_cols=2, box_size=0.5, overwrite=args.overwrite
     )
@@ -1072,8 +1130,8 @@ def main():
         ## One set of sunburst charts per feature type:
         fp = os.path.join(config.output_folder, config.sunburst_fn_template.replace("<FeatureType>", ori_name[:3]))
         plot_many_feature_sunbursts(
-            ori_name=ori_name, 
             feature_DF_dict=feature_DF_dict, 
+            color_dict=color_dicts.sunburst[ori_name], 
             fig_title=f"{ori_name[:3]}", 
             subplot_annots=subplot_annots, 
             output_path=fp, 
@@ -1084,8 +1142,8 @@ def main():
         ## One sunburst chart per group:
         for group_name, feature_DF in feature_DF_dict.items():
             plot_feature_sunburst(
-                ori_name=ori_name, 
                 feature_DF=feature_DF, 
+                color_dict=color_dicts.sunburst[ori_name], 
                 fig_title=fig_titles[group_name], 
                 output_path=fp.replace(".png", f" ({group_name}).png"), 
                 num=True, 
