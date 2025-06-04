@@ -385,6 +385,7 @@ def save_model_info(result_DF, label_cols, desc, output_path, overwrite=False):
                    columns = "Type", 
                    values = "Info")
             .loc[:, desc.feature_orientations] # re-order
+            .iloc[::-1] # reverse rows
             .to_csv(output_path)
         )
         print(f"\nModel types and feature numbers are saved to:\n{output_path}")
@@ -907,10 +908,14 @@ def main():
     ## Load data:
     data_DF, result_DF, selected_features, trainset_info_DF = load_data(
         config, desc, selected_cols=[
-            desc.sid_name, "Age", "PredictedAgeDifference", "CorrectedPAD", 
+            desc.sid_name, "Age", "PredictedAge", "PredictedAgeDifference", "CorrectedPAD", 
             "Model", "NumberOfFeatures"
         ]
     )
+    # fp = os.path.join(config.output_folder, "Long results.csv")
+    # if (not os.path.exists(fp)) or args.overwrite:
+    #     print(f"\nSaving long-format results to:\n{fp}")
+    #     result_DF.to_csv(fp, index=False)
 
     ## If the data was synthetized, compare real and synthetic data for each group:
     if desc.data_synthetized: 
@@ -974,27 +979,29 @@ def main():
     long_result_DF = modify_DF(result_DF, desc)
     
     ## Plot PAD bars: 
-    if args.ignore_all:
-        config.pad_barplot_filename = config.pad_barplot_filename.replace(".png", " (ignore 'All').png")
-    fp = os.path.join(config.output_folder, config.pad_barplot_filename)
+    replace_to = " (ignore 'All').png" if args.ignore_all else ".png"
     plot_pad_bars(
         long_result_DF=long_result_DF, 
         x_lab=grouping_col, 
         color_dict = color_dicts.pad_bars, 
-        output_path=fp, 
+        output_path=os.path.join(config.output_folder, config.pad_barplot_filename.replace(".png", replace_to)), 
         overwrite=args.overwrite
     )
+    
     for ori_name in desc.feature_orientations: 
         ori_name= ori_name[:3]
-        fp2 = fp.replace(".png", f" ({ori_name}).png")
+        replace_to = f" ({ori_name}).png"
         plot_pad_bar(
             long_result_DF=long_result_DF.query("Type == @ori_name"), 
             x_lab=grouping_col, 
             color_dict = color_dicts.pad_bars, 
-            output_path=fp2, 
-            y_lim={"STR": 9, "BEH": 11, "FUN": 14, "ALL": 11}[ori_name], # manually set after checking the data
+            output_path=os.path.join(config.output_folder, config.pad_barplot_filename.replace(".png", replace_to)), 
+            # output_path=os.path.join("derivatives", "TEMP", config.pad_barplot_filename.replace(".png", args.folder + replace_to)), 
+            y_lim={"STR": 9, "BEH": 11, "FUN": 14, "ALL": 11}[ori_name], 
+            # y_lim={"STR": 14, "BEH": 14, "FUN": 14, "ALL": 14}[ori_name], 
             overwrite=args.overwrite
         )
+        
     plot_color_legend(
         color_dict = color_dicts.pad_bars, 
         # color_dict=dict(zip(["PAD", "PAD_ac"], sns.color_dicts("dark", 2))), 

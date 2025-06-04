@@ -105,12 +105,17 @@ class Config:
         else:
             folder_prefix = f"{datetime.today().strftime('%Y-%m-%d')}_original"
 
+        if args.seed is not None:
+            folder_prefix += f"_seed={args.seed}"
+
+        if args.age_method == 0:
+            folder_prefix += "_age-0"
+
+        if args.by_gender == 0:
+            folder_prefix += "_sex-0"
+
         if args.pretrained_model_folder is not None:
             self.out_folder = os.path.join(self.source_path, "outputs", f"{folder_prefix} ({args.pretrained_model_folder})")
-        elif args.seed is not None:
-            self.out_folder = os.path.join(self.source_path, "outputs", f"{folder_prefix}_seed={args.seed}")
-        else:
-            self.out_folder = os.path.join(self.source_path, "outputs", f"{folder_prefix}_{datetime.today().strftime('%H.%M.%S')}")
         
         while os.path.exists(self.out_folder): # make sure the output folder does not exist:
             self.out_folder = self.out_folder + "+"
@@ -119,6 +124,7 @@ class Config:
         self.prepared_data_outpath = os.path.join(self.out_folder, "prepared_data.csv")
         self.logging_outpath = os.path.join(self.out_folder, "log.txt")
         self.failure_record_outpath = os.path.join(self.out_folder, "failure_record.txt")
+        self.scaler_outpath_format = os.path.join(self.out_folder, "scaler_{}.pkl")
         self.model_outpath_format = os.path.join(self.out_folder, "models_{}_{}_{}.pkl")
         self.model_maes_outpath_format = os.path.join(self.out_folder, "model_maes_{}_{}.json")
         self.results_outpath_format = os.path.join(self.out_folder, "results_{}_{}.json")
@@ -331,7 +337,7 @@ def mark_synthetic_data(DF, DF_upsampled):
 
     return DF_marked
 
-def preprocess_grouped_dataset(X, y, ids, testset_ratio, seed):
+def preprocess_grouped_dataset(X, y, ids, testset_ratio, trained_scaler, seed):
     '''
     Fill missing values, split into training and testing sets, and feature scale the grouped dataset.
     
@@ -351,15 +357,24 @@ def preprocess_grouped_dataset(X, y, ids, testset_ratio, seed):
     X_imputed = pd.DataFrame(imputer.fit_transform(X), columns=X.columns)
     
     ## Split into training and testing sets, and then apply feature scaling:
-    scaler = MinMaxScaler()
+    if trained_scaler is None:
+        scaler = MinMaxScaler()
+
     if testset_ratio != 0:
         X_train, X_test, y_train, y_test, id_train, id_test = train_test_split(
             X_imputed, y, ids, test_size=testset_ratio, random_state=seed)
-        X_train_scaled = pd.DataFrame(scaler.fit_transform(X_train), columns=X_train.columns)
-        X_test_scaled = pd.DataFrame(scaler.transform(X_test), columns=X_test.columns)
+        if trained_scaler is None:
+            X_train_scaled = pd.DataFrame(scaler.fit_transform(X_train), columns=X_train.columns)
+            X_test_scaled = pd.DataFrame(scaler.transform(X_test), columns=X_test.columns)
+        else:
+            X_train_scaled = pd.DataFrame(trained_scaler.transform(X_train), columns=X_train.columns)
+            X_test_scaled = pd.DataFrame(trained_scaler.transform(X_test), columns=X_test.columns)
     else:
         X_train, y_train, id_train = X_imputed, y, ids
-        X_train_scaled = pd.DataFrame(scaler.fit_transform(X_train), columns=X_train.columns)
+        if trained_scaler is None:
+            X_train_scaled = pd.DataFrame(scaler.fit_transform(X_train), columns=X_train.columns)
+        else:
+            X_train_scaled = pd.DataFrame(trained_scaler.transform(X_train), columns=X_train.columns)
         X_test_scaled, y_test, id_test = pd.DataFrame(), pd.Series(), pd.Series()
 
     return {
@@ -368,7 +383,8 @@ def preprocess_grouped_dataset(X, y, ids, testset_ratio, seed):
         "y_train": y_train, 
         "y_test": y_test, 
         "id_train": id_train.reset_index(drop=True), 
-        "id_test": id_test.reset_index(drop=True)
+        "id_test": id_test.reset_index(drop=True), 
+        "scaler": scaler if trained_scaler is None else trained_scaler
     }
 
 def feature_selection(X, y, model_name, no_pca, explained_ratio, feature_num, seed, nfold=5):
@@ -816,14 +832,30 @@ def main():
         else:
             logging.info(f"Preprocessing data subset of the {group_name} group ...")
             sub_DF = sub_DF.reset_index(drop=True)
+            if args.pretrained_model_folder is not None:
+                try:
+                    with open(os.path.join("outputs", args.pretrained_model_folder, f"scaler_{group_name}.pkl"), 'rb') as f:
+                        trained_scaler = pickle.load(f)
+                    logging.info("Using pre-trained scaler.")
+                except FileNotFoundError:
+                    logging.warning("Pre-trained scaler not found, build a new MinMaxScaler.")
+                    trained_scaler = None
+            else:
+                trained_scaler = None
+
             preprocessed_data_dicts[group_name] = preprocess_grouped_dataset(
                 X=sub_DF.drop(columns=["ID", "BASIC_INFO_AGE"]), 
                 y=sub_DF["BASIC_INFO_AGE"], 
                 ids=sub_DF["ID"], 
                 testset_ratio=config.testset_ratio, 
+                trained_scaler=trained_scaler, 
                 seed=seed
             ) # a dictionary of train-test splited data, storing 
               # the standardized feature values, age, and ID numbers of participants.
+
+            ## Save the scaler to the output folder:
+            with open(config.scaler_outpath_format.format(group_name), 'wb') as f:
+                pickle.dump(preprocessed_data_dicts[group_name]["scaler"], f)
 
     logging.info("Preprocessing of all data subsets is completed.")
     logging.info("Starting loop through all groups and orientations ...")

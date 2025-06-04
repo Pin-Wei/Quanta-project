@@ -75,6 +75,26 @@ if __name__ == "__main__":
                 "Undivided" : os.path.join("outputs", "2025-05-28_down-sampled_seed=9865_age-0_sex-0")
             },
             os.path.join("derivatives", "2025-05-28_down-sampled_seed=9865_compare")
+        ), 
+        (
+            "Original data and select top-50 features.", 
+            {
+                "By_Age-Sex": os.path.join("outputs", "2025-05-29_original_seed=9865"), 
+                "By_Age"    : os.path.join("outputs", "2025-05-29_original_seed=9865_sex-0"), 
+                "By_Sex"    : os.path.join("outputs", "2025-05-29_original_seed=9865_age-0"), 
+                "Undivided" : os.path.join("outputs", "2025-05-29_original_seed=9865_age-0_sex-0")
+            }, 
+            os.path.join("derivatives", "2025-05-29_original_seed=9865_compare")
+        ), 
+        (
+            "Down-sampled data and select features with PCA.", 
+            {
+                "By_Age-Sex": os.path.join("outputs", "2025-06-02_down-sampled_seed=9865"), 
+                "By_Age"    : os.path.join("outputs", "2025-06-02_down-sampled_seed=9865_sex-0"), 
+                "By_Sex"    : os.path.join("outputs", "2025-06-02_down-sampled_seed=9865_age-0"), 
+                "Undivided" : os.path.join("outputs", "2025-06-02_down-sampled_seed=9865_age-0_sex-0")
+            },
+            os.path.join("derivatives", "2025-06-02_down-sampled_seed=9865_compare")
         )
     ][int(sys.argv[1])]
     print(f"\n# Version comparison: {note}\n")
