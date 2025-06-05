@@ -1007,19 +1007,19 @@ def main():
                         age_groups=pad_age_groups, 
                         age_breaks=pad_age_breaks
                     )
-                            
-                    if data_dict["X_test"].empty: 
-                        logging.info("Applying age-correction to the training set ...")
-                        corrected_y_pred_train = apply_age_correction(
-                            predictions=y_pred_train, 
-                            true_ages=data_dict["y_train"], 
-                            correction_ref=correction_ref, 
-                            age_groups=pad_age_groups, 
-                            age_breaks=pad_age_breaks
-                        )
-                        corrected_y_pred_train = pd.Series(corrected_y_pred_train, index=data_dict["y_train"].index)
-                        padac_train = corrected_y_pred_train - data_dict["y_train"]
 
+                    logging.info("Applying age-correction to the training set ...")
+                    corrected_y_pred_train = apply_age_correction(
+                        predictions=y_pred_train, 
+                        true_ages=data_dict["y_train"], 
+                        correction_ref=correction_ref, 
+                        age_groups=pad_age_groups, 
+                        age_breaks=pad_age_breaks
+                    )
+                    corrected_y_pred_train = pd.Series(corrected_y_pred_train, index=data_dict["y_train"].index)
+                    padac_train = corrected_y_pred_train - data_dict["y_train"]
+
+                    if data_dict["X_test"].empty: 
                         save_results = {
                             "Model": best_model_name, 
                             "MeanTrainMAE": mean_train_mae, 
@@ -1059,6 +1059,11 @@ def main():
                             "MeanTrainMAE": mean_train_mae, 
                             "NumberOfTraining": len(data_dict["id_train"]), 
                             "TrainingSubjID": list(data_dict["id_train"]), 
+                            "TrainingAge": list(data_dict["y_train"]), 
+                            "TrainingPredAge": list(y_pred_train), 
+                            "TrainingPAD": list(pad_train), 
+                            "TrainingPADAC": list(padac_train), 
+                            "TrainingCorPredAge": list(corrected_y_pred_train), 
                             "NumberOfTesting": len(data_dict["id_test"]), 
                             "TestingSubjID": list(data_dict["id_test"]), 
                             "Age": list(data_dict["y_test"]), 

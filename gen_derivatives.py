@@ -50,6 +50,8 @@ parser = argparse.ArgumentParser(
     7) Sunburst plots visualizing the proportion of features domain and approach used
       in each model: 
         '[pie] {ori_type}.png'.
+    
+    * Note: some newly added outputs are not included in this discription
 
     The files will be saved in a folder with the same name as the '-f' argument
     under the 'derivatives' folder.
@@ -79,17 +81,50 @@ class Config:
         self.model_info_filename     = "[table] model types and feature numbers.csv"
         self.disc_table_filename     = "[table] median and std of ages.csv"
         self.balanced_disc_table_fn  = "[table] median and std of ages after balancing.csv"
+        self.combined_results_fn     = "[table] combined results.csv"
         self.pad_corr_table_filename = f"[table] pairwise correlations between {self.pad_type}.xlsx"
         ## Figures: 
         self.data_hist_fn_template   = "[hist] distributions of real and synthetic data in <GroupName>.png"
         self.data_cormat_fn_template = "[cormat] between features in <GroupName>'s <S_or_R> data.png"
+        self.pred_corr_real_filename = "[scatter] correlation between true and predicted age.png"
         self.pad_barplot_filename    = "[bar] PAD values.png"
         self.pad_cormat_fn_template  = f"[cormat] between {self.pad_type} in <GroupName>.png"
         self.pad_scatter_fn_template = f"[scatter] between {self.pad_type} in <GroupName> (<Type1> × <Type2>).png"
         self.sunburst_fn_template    = "[pie] <FeatureType>.png"
 
+class Constants:
+    def __init__(self):
+        self.data_synth_methods = [
+            "SMOTENC", "CTGAN", "TVAE"
+        ]
+        self.test_result_cols = [
+            "Age", "PredictedAge", "PredictedAgeDifference", "CorrectedPAD", "CorrectedPredictedAge"
+        ]
+        self.train_result_cols = [
+            "TrainingSubjID", "TrainingAge", "TrainingPredAge", "TrainingPAD", "TrainingPADAC", "TrainingCorPredAge"
+        ]
+        self.model_info_cols = [
+            "Model", "NumberOfFeatures"
+        ]
+        self.pad_bar_y_lims = [
+            {"STR": 9, "BEH": 11, "FUN": 14, "ALL": 11}, 
+            {"STR": 14, "BEH": 14, "FUN": 14, "ALL": 14}
+        ][1]
+    
 class ColorDicts:
     def __init__(self): 
+        self.sex = {
+            "M": "#3399FF", 
+            "F": "#FF9933"
+        }
+        self.train_test = {
+            "Train": "#3399FF", 
+            "Test": "#FF9933"
+        }
+        self.real_synth = {
+            "Real": "#FF9933", 
+            "Synthetic": "#3399FF"
+        }
         self.pad_bars = {
             "PAD":    "#219EBC",
             "PAD_ac": "#FB8500" 
@@ -146,7 +181,7 @@ class ColorDicts:
             }
         }
 
-def load_description(config):
+def load_description(config, const):
     '''
     Load the parameters from the description file and update the description object.
     <returns>:
@@ -183,37 +218,40 @@ def load_description(config):
             self.sid_name = "TestingSubjID" if self.traintest else "SubjID"
 
             ## Whether the data was synthetized:
-            if desc_json["DataBalancingMethod"] in ["SMOTENC", "CTGAN", "TVAE"]:
+            if desc_json["DataBalancingMethod"] in const.data_synth_methods:
                 self.data_synthetized = True
             else:
                 self.data_synthetized = False
 
     return Description()
 
-def load_data(config, desc, selected_cols):
+def load_data(config, desc, const, output_path, overwrite=False):
     '''
-    <returns>:
-    - data_DF (pd.DataFrame): The dataset used for model training.
-    - result_DF (pd.DataFrame): The (JSON) results of model training (only include selected columns).
-    - selected_features (dict): The features used by each model.
-    - trainset_info_DF (pd.DataFrame): Personal information of participants in the training set .
+    Load: 
+    - data_DF (pd.DataFrame): The entire dataset used for model training.
+    - selected_features (dict): The features selected to train the model.
+    - result_DF (pd.DataFrame): Various results of model training, originally in JSON format.
+    - combined_results_DF (pd.DataFrame): Combined results of model training across train/test splits.
+    and save the result dataframe to file.
     '''
     print("\nLoading data...")
 
-    ## The data used for model training:
+    ## The entire dataset used for model training:
     if desc.data_synthetized:
         data_DF = pd.read_csv(os.path.join(config.input_folder, "prepared_data (marked).csv"))
     else:
         data_DF = pd.read_csv(os.path.join(config.input_folder, "prepared_data.csv"))
+    
+    data_DF["SID"] = data_DF["ID"].map(lambda x: x.replace("sub-0", ""))
+    data_DF.drop(columns=["ID"], inplace=True)
+
     data_DF["AGE_GROUP"] = pd.cut(data_DF["BASIC_INFO_AGE"], bins=desc.age_breaks, labels=desc.age_group_labels)
     if desc.sep_sex:
         data_DF["SEX"] = data_DF["BASIC_INFO_SEX"].replace({1: "M", 2: "F"})    
-    data_DF["SID"] = data_DF["ID"].map(lambda x: x.replace("sub-0", ""))
-    data_DF.drop(columns=["ID"], inplace=True)
-    
-    ## The results of modeling:
-    selected_result_list = []
+
+    ## The features selected to train the model and the modeling results:
     selected_features = { o: {} for o in desc.feature_orientations }
+    main_results_list, train_results_list = [], []
     trainset_infos = []
 
     for label in desc.label_list:
@@ -224,53 +262,126 @@ def load_data(config, desc, selected_cols):
             age_group = label
             group_name = label
 
-        ## Load the model results:
         for ori_name in desc.feature_orientations:
-            data_path = os.path.join(
-                config.input_folder, f"results_{group_name}_{ori_name}.json")
+            data_path = os.path.join(config.input_folder, f"results_{group_name}_{ori_name}.json")
             
             if os.path.exists(data_path):
                 print(os.path.basename(data_path))
 
                 with open(data_path, 'r', errors='ignore') as f:
                     results = json.load(f)
-                    selected_results = pd.DataFrame({ 
-                        k: v for k, v in results.items() if k in selected_cols
-                    })
-                    selected_results["AgeGroup"] = age_group
-                    if desc.sep_sex:
-                        selected_results["Sex"] = sex
-                    selected_results["Type"] = ori_name
-                    selected_result_list.append(selected_results)
 
                     selected_features[ori_name][group_name] = results["FeatureNames"]
 
-        if desc.traintest:            
-            temp_DF = pd.DataFrame({
-                "SID": [ x.replace("sub-0", "") for x in results["TrainingSubjID"] ]
-            })
-            temp_DF["AgeGroup"] = age_group
-            trainset_infos.append(temp_DF)
+                    main_results = pd.DataFrame({ 
+                        k: v for k, v in results.items() if k in 
+                        [desc.sid_name] + const.test_result_cols + const.model_info_cols
+                    })
+                    main_results.insert(0, "Type", ori_name)
+                    main_results.insert(2, "AgeGroup", age_group)
+                    if desc.sep_sex:
+                        main_results.insert(2, "Sex", sex)
+                    main_results_list.append(main_results)
 
-    result_DF = pd.concat(selected_result_list, ignore_index=True)
-    result_DF["SID"] = result_DF[desc.sid_name].map(lambda x: x.replace("sub-0", ""))
+                    if desc.traintest:
+                        train_results = pd.DataFrame({
+                            k: v for k, v in results.items() if k in const.train_result_cols
+                        })
+                        train_results.insert(0, "Type", ori_name)
+                        train_results.insert(2, "AgeGroup", age_group)
+                        if desc.sep_sex:
+                            train_results.insert(2, "Sex", sex)
+                        train_results_list.append(train_results)
+
+        # if desc.traintest:            
+        #     temp_DF = pd.DataFrame({
+        #         "SID": [ x.replace("sub-0", "") for x in results["TrainingSubjID"] ]
+        #     })
+        #     temp_DF["AgeGroup"] = age_group
+        #     trainset_infos.append(temp_DF)
+
+    result_DF = pd.concat(main_results_list, ignore_index=True)
+    result_DF.insert(1, "SID", result_DF[desc.sid_name].map(lambda x: x.replace("sub-0", "")))
     result_DF.drop(columns=[desc.sid_name], inplace=True)
 
     if desc.traintest: 
-        trainset_info_DF = pd.concat(trainset_infos, ignore_index=True)
-        all_subj_info_DF = (
-            data_DF
-            .loc[:, ["SID", "BASIC_INFO_AGE", "BASIC_INFO_SEX"]]
-            .rename(columns={
-                "BASIC_INFO_AGE": "Age", 
-                "BASIC_INFO_SEX": "Sex"
-            })
-        )
-        trainset_info_DF = trainset_info_DF.merge(all_subj_info_DF, on="SID", how='inner')
-    else:
-        trainset_info_DF = None
+        train_results_DF = pd.concat(train_results_list, ignore_index=True)
+        train_results_DF.insert(1, "SID", train_results_DF["TrainingSubjID"].map(lambda x: x.replace("sub-0", "")))
+        train_results_DF.drop(columns=["TrainingSubjID"], inplace=True)
+        train_results_DF.rename(columns={
+            "TrainingAge"       : "Age", 
+            "TrainingPredAge"   : "PredictedAge", 
+            "TrainingPAD"       : "PredictedAgeDifference", 
+            "TrainingPADAC"     : "CorrectedPAD", 
+            "TrainingCorPredAge": "CorrectedPredictedAge"
+        }, inplace=True)
 
-    return data_DF, result_DF, selected_features, trainset_info_DF
+        test_results_DF = result_DF.copy(deep=True)
+        test_results_DF.insert(1, "TrainTest", "Test")
+        test_results_DF.drop(columns=["Model", "NumberOfFeatures"], inplace=True)
+        train_results_DF.insert(1, "TrainTest", "Train")
+        combined_results_DF = pd.concat([train_results_DF, test_results_DF])
+        combined_results_DF.sort_values(
+            by=["Type", "AgeGroup", "Sex", "TrainTest"], ascending=False
+        ).to_csv(output_path, index=False)
+
+        # trainset_info_DF = pd.concat(trainset_infos, ignore_index=True)
+        # all_subj_info_DF = (
+        #     data_DF
+        #     .loc[:, ["SID", "BASIC_INFO_AGE", "BASIC_INFO_SEX"]]
+        #     .rename(columns={
+        #         "BASIC_INFO_AGE": "Age", 
+        #         "BASIC_INFO_SEX": "Sex"
+        #     })
+        # )
+        # trainset_info_DF = trainset_info_DF.merge(all_subj_info_DF, on="SID", how='inner')
+    else:
+        combined_results_DF = result_DF
+        result_DF.to_csv(output_path, index=False)
+
+    print(f"\nResults are saved to:\n{output_path}")
+
+    return data_DF, selected_features, result_DF, combined_results_DF
+
+def format_p(p):
+    if p < .001:
+        return "p < .001***"
+    elif p < .01:
+        return f"p = {p:.3f}**".lstrip('0')
+    elif p < .05:
+        return f"p = {p:.3f}*".lstrip('0')
+    elif p == 1:
+        return "p = 1"
+    else:
+        return f"p = {p:.3f}".lstrip('0')
+
+def plot_age_pred_corr(combined_results_DF, y_lab, color_hue, color_dict, 
+                       output_path, overwrite=False, 
+                       font_scale=1.2, fig_size=(5, 5), dpi=500):
+    '''
+    Plot the correlation between participants' real ages and predicted ages.
+    '''
+    if (not os.path.exists(output_path)) or overwrite:
+        sns.set_theme(style='whitegrid', font_scale=font_scale)
+        fig = plt.figure(figsize=fig_size, dpi=dpi)
+        g = sns.scatterplot(
+            data=combined_results_DF, x="Age", y=y_lab, 
+            hue=color_hue, palette=color_dict
+        )
+        plt.plot(
+            g.get_xlim(), g.get_ylim(), color="k", linewidth=1, linestyle="--"
+        )
+        r, p = pearsonr(combined_results_DF["Age"], combined_results_DF[y_lab])
+        p_print = format_p(p)
+        N = len(combined_results_DF)        
+        g.set_title(f"r = {r:.2f}, {p_print}, N = {N:.0f}")
+        g.set_xlabel("Real age")
+        g.set_ylabel("Predicted age")
+        g.get_legend().set_title("")
+        plt.tight_layout()
+        plt.savefig(output_path)
+        plt.close()
+        print(f"\nCorrelation between predicted age and real age is saved to:\n{output_path}")
 
 def compute_KL_divergence(targ_vals_R, targ_vals_S, num_bins=30):
     '''
@@ -310,7 +421,7 @@ def test_real_vs_synthetic(targ_vals_R, targ_vals_S, observed_D, n_permutations=
 
     return p_value
 
-def plot_data_dist(data_DF, age_group, sex, selected_features, output_path, 
+def plot_data_dist(data_DF, age_group, sex, selected_features, color_dict, output_path, 
                    orientations=["STRUCTURE", "BEH", "FUNCTIONAL"],
                    num_bins=30, alpha=0.8, overwrite=False):
     '''
@@ -351,7 +462,7 @@ def plot_data_dist(data_DF, age_group, sex, selected_features, output_path,
                 ax = plt.subplot(len(orientations), 2, fig_idx)
                 ax.hist(
                     [targ_vals_R, targ_vals_S], bins=num_bins, density=True, 
-                    color=['#FF9933', '#3399FF'], alpha=alpha, 
+                    color=color_dict.values(), alpha=alpha, 
                     label=[f"R ({len(targ_vals_R)})", f"S ({len(targ_vals_S)})"]
                 )
                 ax.set_xlabel(targ_col, fontsize=12)
@@ -411,16 +522,16 @@ def save_discriptive_table(DF, label_cols, output_path, overwrite=False):
 
 def modify_DF(result_DF, desc):
     '''
-    Modify the DataFrame and transform it to long format.
+    Modify the DataFrame, transform it to long format, and save to a .csv file.
     <returns>:
     - long_result_DF: DataFrame in long format.
     '''
-    result_DF.rename(columns={
-        "PredictedAgeDifference": "PAD", 
-        "CorrectedPAD": "PAD_ac"
-    }, inplace=True)
-
-    long_result_DF = (result_DF
+    long_result_DF = (
+        result_DF
+        .rename(columns={
+            "PredictedAgeDifference": "PAD", 
+            "CorrectedPAD": "PAD_ac"
+        })
         .loc[:, ["SID", "Age"] + desc.label_cols + ["Type", "PAD", "PAD_ac"]]
         .melt(
             id_vars = ["SID", "Age"] + desc.label_cols + ["Type"], 
@@ -432,10 +543,13 @@ def modify_DF(result_DF, desc):
             "STRUCTURE": "STR", 
             "FUNCTIONAL": "FUN"
         })
+        .sort_values(
+            by=desc.label_cols, 
+            ascending=False
+        )
     )
     long_result_DF["PAD_abs_value"] = long_result_DF["PAD_value"].abs()
 
-    long_result_DF = long_result_DF.sort_values(by=desc.label_cols, ascending=False)
     if desc.sep_sex:
         long_result_DF["AgeSex"] = long_result_DF["AgeGroup"] + "_" + long_result_DF["Sex"]
 
@@ -601,28 +715,16 @@ def calc_pairwise_corr(wide_sub_DF_dict, targ_cols, grouping_col, excel_file, ov
     
     return pd.concat(pw_corr_list, ignore_index=True)
 
-def format_p(p):
-    if p < .001:
-        return "p < .001***"
-    elif p < .01:
-        return f"p = {p:.3f}**".lstrip('0')
-    elif p < .05:
-        return f"p = {p:.3f}*".lstrip('0')
-    elif p == 1:
-        return "p = 1"
-    else:
-        return f"p = {p:.3f}".lstrip('0')
-
 def plot_scatter_from_corr(corr_DF, group_name, wide_sub_DF, t1, t2, grouping_col, p_apply, 
                            output_path, overwrite=False, 
-                           font_scale=1.2, figsize=(5, 5), dpi=500):
+                           font_scale=1.2, fig_size=(5, 5), dpi=500):
     '''
     Plot the correlation scatter plot for sub-dataframes.
     <no returns>
     '''
     if (not os.path.exists(output_path)) or overwrite:
         sns.set_theme(style='whitegrid', font_scale=font_scale)
-        fig = plt.figure(num=None, figsize=figsize, dpi=dpi)
+        fig = plt.figure(figsize=fig_size, dpi=dpi)
         g = sns.JointGrid(
             data=wide_sub_DF, x=t1, y=t2, height=5, ratio=3
         )
@@ -893,29 +995,42 @@ def plot_color_legend(color_dict, output_path,
 
 def main():
     config = Config()
-    pad_type = config.pad_type # for correlations 
-
-    desc = load_description(config)
-    grouping_col = "AgeSex" if desc.sep_sex else "AgeGroup"
-
+    const = Constants()
+    desc = load_description(config, const)
     color_dicts = ColorDicts()
+
     standardized_features = standardized_feature_list()
     domain_approach_mapping = domain_approach_mapping_dict()
+
+    pad_type = config.pad_type # for correlations 
+    grouping_col = "AgeSex" if desc.sep_sex else "AgeGroup"
 
     if not os.path.exists(config.output_folder):
         os.makedirs(config.output_folder)
 
-    ## Load data:
-    data_DF, result_DF, selected_features, trainset_info_DF = load_data(
-        config, desc, selected_cols=[
-            desc.sid_name, "Age", "PredictedAge", "PredictedAgeDifference", "CorrectedPAD", 
-            "Model", "NumberOfFeatures"
-        ]
+    ## Load data and save the combined result table:
+    data_DF, selected_features, result_DF, combined_results_DF = load_data(
+        config, desc, const, 
+        output_path=os.path.join(config.output_folder, config.combined_results_fn), 
+        overwrite=args.overwrite
     )
-    # fp = os.path.join(config.output_folder, "Long results.csv")
-    # if (not os.path.exists(fp)) or args.overwrite:
-    #     print(f"\nSaving long-format results to:\n{fp}")
-    #     result_DF.to_csv(fp, index=False)
+
+    ## Plot correlation between real and predicted ages:
+    for ori_name in desc.feature_orientations: 
+        fp = os.path.join(config.output_folder, config.pred_corr_real_filename.replace(".png", f" ({ori_name[:3]}).png"))
+        
+        for file_path, y_lab in [
+            (fp, "PredictedAge"), 
+            (fp.replace("predicted", "corrected predicted"), "CorrectedPredictedAge")
+        ]:
+            plot_age_pred_corr(
+                combined_results_DF=combined_results_DF.query("Type == @ori_name"), 
+                y_lab=y_lab, 
+                color_hue=["Sex", "TrainTest"][1], 
+                color_dict=[color_dicts.sex, color_dicts.train_test][1], 
+                output_path=file_path,
+                overwrite=args.overwrite
+            )
 
     ## If the data was synthetized, compare real and synthetic data for each group:
     if desc.data_synthetized: 
@@ -930,7 +1045,7 @@ def main():
 
             ## Plot data distribution and compute K-L divergence (of the first two features selected based on PCA-based ranking in each feature orientation):
             targ_col_list = plot_data_dist(
-                data_DF, age_group, sex, selected_features, 
+                data_DF, age_group, sex, selected_features, color_dict.real_synth, 
                 os.path.join(config.output_folder, config.data_hist_fn_template.replace("<GroupName>", group_name)), 
                 overwrite=args.overwrite
             )
@@ -964,14 +1079,16 @@ def main():
 
     ## Aggregate medians and STDs of ages for each participant group (save to a table):
     save_discriptive_table(
-        result_DF, desc.label_cols,
-        os.path.join(config.output_folder, config.disc_table_filename), 
+        DF=result_DF, 
+        label_cols=desc.label_cols,
+        output_path=os.path.join(config.output_folder, config.disc_table_filename), 
         overwrite=args.overwrite
     )    
     if desc.traintest:
         save_discriptive_table(
-            trainset_info_DF, desc.label_cols,
-            os.path.join(config.output_folder, config.disc_table_filename.replace(".csv", " (training set).csv")), 
+            DF=combined_results_DF.query("TrainTest == 'Train'"), 
+            label_cols=desc.label_cols,
+            output_path=os.path.join(config.output_folder, config.disc_table_filename.replace(".csv", " (training set).csv")), 
             overwrite=args.overwrite
         )
 
@@ -996,9 +1113,7 @@ def main():
             x_lab=grouping_col, 
             color_dict = color_dicts.pad_bars, 
             output_path=os.path.join(config.output_folder, config.pad_barplot_filename.replace(".png", replace_to)), 
-            # output_path=os.path.join("derivatives", "TEMP", config.pad_barplot_filename.replace(".png", args.folder + replace_to)), 
-            y_lim={"STR": 9, "BEH": 11, "FUN": 14, "ALL": 11}[ori_name], 
-            # y_lim={"STR": 14, "BEH": 14, "FUN": 14, "ALL": 14}[ori_name], 
+            y_lim=const.pad_bar_y_lims[ori_name],
             overwrite=args.overwrite
         )
         
