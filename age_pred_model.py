@@ -1,7 +1,5 @@
 #!/usr/bin/python
 
-# python age_pred_model.py [-age] [-sex] [-u] [-d] [-b] [-n] [-tsr] [-iam] [-oam] [-fsm] [-epr] [-pmf] [-i] [-s]
-
 import os
 import argparse
 import logging
@@ -18,7 +16,7 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.model_selection import KFold, train_test_split
 import optuna
 from sklearn.decomposition import PCA
-from sklearn.linear_model import LassoCV, ElasticNet
+from sklearn.linear_model import LassoCV, ElasticNet, LinearRegression
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.tree import DecisionTreeRegressor
 from lightgbm import LGBMRegressor
@@ -59,7 +57,7 @@ parser.add_argument("-oam", "--only_all_mapping", action="store_true", default=F
 parser.add_argument("-psf", "--preselected_feature_folder", type=str, default=None, 
                     help="The folder where the result files (.json) containing the selected features are stored.")
 parser.add_argument("-fsm", "--feature_selection_model", type=int, default=0, 
-                    help="The model to use for feature selection (0: 'LassoCV', 1: 'RF', 2: 'XGBR').")
+                    help="The model to use for feature selection (0: 'LassoCV', 1: 'ElasticNet', 2: 'RF', 3: 'XGBR').")
 parser.add_argument("--no_pca", action="store_true", default=False, 
                     help="Do not use PCA for feature selection.")
 parser.add_argument("-epr", "--explained_ratio", type=float, default=0.9, 
@@ -73,6 +71,9 @@ parser.add_argument("-i", "--ignore", type=int, default=0,
                     help="Ignore the first N iterations (in case you might be interrupted by an error and don't want to start from the beginning).")
 parser.add_argument("-s", "--seed", type=int, default=None, 
                     help="The value used to initialize all random number generator.")
+## Age correction:
+parser.add_argument("-acm", "--age_correction_method", type=int, default=0, 
+                    help="The method to correct age (0: 'Zhang et al. (2023)', 1: 'Beheshti et al. (2019)').")
 args = parser.parse_args()
 
 ## Classes: ===========================================================================
@@ -86,24 +87,29 @@ class Config:
         self.age_method = ["no_cut", "cut_at_40", "cut_44-45", "wais_8_seg"][args.age_method]
         self.by_gender = [False, True][args.by_gender]
         self.testset_ratio = args.testset_ratio
-        self.feature_selection_model = ["LassoCV", "RF", "XGBR"][args.feature_selection_model]
+        self.feature_selection_model = ["LassoCV", "ElasticNet", "RF", "XGBR"][args.feature_selection_model]
         if not args.no_pca:
             self.explained_ratio = args.explained_ratio
         else:
             self.explained_ratio = None
-        self.pad_method = ["wais_8_seg", "every_5_yrs"][0]
+        self.age_correction_method = ["Zhang et al. (2023)", "Beheshti et al. (2019)"][args.age_correction_method]
+        self.age_correction_groups = ["wais_8_seg", "every_5_yrs"][0]
 
+        folder_prefix = datetime.today().strftime('%Y-%m-%d')
         if args.use_prepared_data:
             syn_method = os.path.basename(os.path.dirname(args.use_prepared_data)).split("_")[0]
-            folder_prefix = f"{datetime.today().strftime('%Y-%m-%d')}_{syn_method}"
+            folder_prefix += f"_{syn_method}"
         elif args.smotenc:
-            folder_prefix = f"{datetime.today().strftime('%Y-%m-%d')}_smotenc" # up-sampled
+            folder_prefix += "_smotenc" # up-sampled
         elif args.downsample:
-            folder_prefix = f"{datetime.today().strftime('%Y-%m-%d')}_down-sampled"
+            folder_prefix += "_down-sampled"
         elif args.bootstrap:
-            folder_prefix = f"{datetime.today().strftime('%Y-%m-%d')}_bootstrapped"
+            folder_prefix += "_bootstrapped"
         else:
-            folder_prefix = f"{datetime.today().strftime('%Y-%m-%d')}_original"
+            folder_prefix += "_original"
+
+        if args.no_pca:
+            folder_prefix += "_no-pca"
 
         if args.seed is not None:
             folder_prefix += f"_seed={args.seed}"
@@ -115,8 +121,13 @@ class Config:
             folder_prefix += "_sex-0"
 
         if args.pretrained_model_folder is not None:
-            self.out_folder = os.path.join(self.source_path, "outputs", f"{folder_prefix} ({args.pretrained_model_folder})")
-        
+            if len(args.pretrained_model_folder) > 30: # avoid too long path
+                self.out_folder = os.path.join(self.source_path, "outputs", f"{folder_prefix}_pre-trained")
+            else:
+                self.out_folder = os.path.join(self.source_path, "outputs", f"{folder_prefix} ({args.pretrained_model_folder})")
+        else:
+            self.out_folder = os.path.join(self.source_path, "outputs", folder_prefix)
+
         while os.path.exists(self.out_folder): # make sure the output folder does not exist:
             self.out_folder = self.out_folder + "+"
 
@@ -151,7 +162,6 @@ class Constants:
                 "35-44": (35, 44), 
                 "45-54": (45, 54), 
                 "55-64": (55, 64), 
-                # "ge-65": (65, np.inf)
                 "65-69": (65, 69), 
                 "ge-70": (70, np.inf)
             }, 
@@ -406,6 +416,11 @@ def feature_selection(X, y, model_name, no_pca, explained_ratio, feature_num, se
         model.fit(X, y)
         sort_by = np.abs(model.coef_) # absolute value of the coefficients
 
+    elif model_name == "ElasticNet":
+        model = ElasticNet(random_state=seed)
+        model.fit(X, y)
+        sort_by = np.abs(model.coef_)
+
     elif model_name == "RF":
         model = RandomForestRegressor(n_estimators=100, random_state=seed)
         model.fit(X, y)
@@ -628,6 +643,15 @@ def apply_age_correction(predictions, true_ages, correction_ref, age_groups, age
 
     return np.array(corrected_predictions)
 
+def model_age_related_bias(real_ages, offsets):
+    reg  = LinearRegression().fit(
+        X=np.array(real_ages).reshape(-1, 1), y=np.array(offsets)
+    )
+    return {"intercept": reg.intercept_, "slope": reg.coef_}
+
+def calc_bias_free_offsets(reg, predicted_ages):
+    return predicted_ages * reg["slope"] + reg["intercept"]
+
 def convert_np_types(obj):
     if isinstance(obj, np.ndarray):
         return obj.tolist() # Convert np.ndarray to list
@@ -708,8 +732,8 @@ def main():
     age_boundaries = list(constant.age_groups[config.age_method].values()) 
 
     ## Define the labels and boundaries for age correction:
-    pad_age_groups = list(constant.age_groups[config.pad_method].keys())
-    pad_age_breaks = [ 0 ] + [ x for _, x in list(constant.age_groups[config.pad_method].values()) ] 
+    pad_age_groups = list(constant.age_groups[config.age_correction_groups].keys())
+    pad_age_breaks = [ 0 ] + [ x for _, x in list(constant.age_groups[config.age_correction_groups].values()) ] 
 
     ## Include (or only include) the 'ALL' domain-approach mapping, if specified:
     if args.include_all_mappings:
@@ -747,7 +771,8 @@ def main():
         "FeatureExplainedRatio": config.explained_ratio, 
         "FeatureNum": constant.feature_num if not args.no_pca else None, 
         "IncludedOptimizationModels": print_included_models, 
-        "SkippedIterationNum": args.ignore, 
+        "SkippedIterationNum": args.ignore,  
+        "AgeCorrectionMethod": config.age_correction_method, 
         "AgeCorrectionGroups": pad_age_groups
     }
     desc = convert_np_types(desc)
@@ -1000,24 +1025,40 @@ def main():
                     y_pred_train = best_model.predict(X_train_selected)
                     pad_train = y_pred_train - data_dict["y_train"]
 
-                    logging.info("Generating age-correction reference table ...")
-                    correction_ref = generate_correction_ref(
-                        age=data_dict["y_train"], 
-                        pad=pad_train, 
-                        age_groups=pad_age_groups, 
-                        age_breaks=pad_age_breaks
-                    )
+                    if config.age_correction_method == "Zhang et al. (2023)":
+                        logging.info("Generating age-correction reference table ...")
+                        correction_ref = generate_correction_ref(
+                            age=data_dict["y_train"], 
+                            pad=pad_train, 
+                            age_groups=pad_age_groups, 
+                            age_breaks=pad_age_breaks
+                        )
 
-                    logging.info("Applying age-correction to the training set ...")
-                    corrected_y_pred_train = apply_age_correction(
-                        predictions=y_pred_train, 
-                        true_ages=data_dict["y_train"], 
-                        correction_ref=correction_ref, 
-                        age_groups=pad_age_groups, 
-                        age_breaks=pad_age_breaks
-                    )
-                    corrected_y_pred_train = pd.Series(corrected_y_pred_train, index=data_dict["y_train"].index)
-                    padac_train = corrected_y_pred_train - data_dict["y_train"]
+                        logging.info("Applying age-correction to the training set ...")
+                        corrected_y_pred_train = apply_age_correction(
+                            predictions=y_pred_train, 
+                            true_ages=data_dict["y_train"], 
+                            correction_ref=correction_ref, 
+                            age_groups=pad_age_groups, 
+                            age_breaks=pad_age_breaks
+                        )
+                        corrected_y_pred_train = pd.Series(corrected_y_pred_train, index=data_dict["y_train"].index)
+                        padac_train = corrected_y_pred_train - data_dict["y_train"]
+
+                    elif config.age_correction_method == "Beheshti et al. (2019)":
+                        logging.info("Applying age-correction to the training set using Beheshti et al.'s (2019) method ...")
+                        correction_ref = model_age_related_bias(
+                            data_dict["y_train"], pad_train
+                        )
+                        padac_train = calc_bias_free_offsets(
+                            correction_ref, y_pred_train
+                        )
+                        corrected_y_pred_train = data_dict["y_train"] - padac_train
+
+                    else:
+                        logging.info("No age correction is applied ...")
+                        corrected_y_pred_train = None
+                        padac_train = None
 
                     if data_dict["X_test"].empty: 
                         save_results = {
@@ -1031,7 +1072,7 @@ def main():
                             "PredictedAgeDifference": list(pad_train), 
                             "CorrectedPAD": list(padac_train), 
                             "CorrectedPredictedAge": list(corrected_y_pred_train), 
-                            "AgeCorrectionTable": correction_ref.to_dict(orient='records'), 
+                            "AgeCorrectionTable": correction_ref.to_dict(orient='records') if type(correction_ref) is not dict else correction_ref, 
                             "NumberOfFeatures": len(selected_features), 
                             "FeatureNames": selected_features, 
                         }
@@ -1043,16 +1084,29 @@ def main():
                         y_pred_test = pd.Series(y_pred_test, index=data_dict["y_test"].index)
                         pad = y_pred_test - data_dict["y_test"]
 
-                        logging.info("Applying age-correction to the testing set ...")
-                        corrected_y_pred_test = apply_age_correction(
-                            predictions=y_pred_test, 
-                            true_ages=data_dict["y_test"], 
-                            correction_ref=correction_ref, 
-                            age_groups=pad_age_groups, 
-                            age_breaks=pad_age_breaks
-                        )
-                        corrected_y_pred_test = pd.Series(corrected_y_pred_test, index=data_dict["y_test"].index)
-                        padac = corrected_y_pred_test - data_dict["y_test"]
+                        if config.age_correction_method == "Zhang et al. (2023)":
+                            logging.info("Applying age-correction to the testing set ...")
+                            corrected_y_pred_test = apply_age_correction(
+                                predictions=y_pred_test, 
+                                true_ages=data_dict["y_test"], 
+                                correction_ref=correction_ref, 
+                                age_groups=pad_age_groups, 
+                                age_breaks=pad_age_breaks
+                            )
+                            corrected_y_pred_test = pd.Series(corrected_y_pred_test, index=data_dict["y_test"].index)
+                            padac = corrected_y_pred_test - data_dict["y_test"]
+
+                        elif config.age_correction_method == "Beheshti et al. (2019)":
+                            logging.info("Applying age-correction to the testing set using Beheshti et al.'s (2019) method ...")
+                            padac = calc_bias_free_offsets(
+                                correction_ref, y_pred_test
+                            )
+                            corrected_y_pred_test = data_dict["y_test"] - padac
+
+                        else:
+                            logging.info("Again, no age correction is applied ...")
+                            corrected_y_pred_test = None
+                            padac = None
 
                         save_results = {
                             "Model": best_model_name, 
@@ -1071,7 +1125,7 @@ def main():
                             "PredictedAgeDifference": list(pad), 
                             "CorrectedPAD": list(padac), 
                             "CorrectedPredictedAge": list(corrected_y_pred_test), 
-                            "AgeCorrectionTable": correction_ref.to_dict(orient='records'), 
+                            "AgeCorrectionTable": correction_ref.to_dict(orient='records') if type(correction_ref) is not dict else correction_ref, 
                             "NumberOfFeatures": len(selected_features), 
                             "FeatureNames": selected_features, 
                         }

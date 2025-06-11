@@ -83,6 +83,7 @@ class Config:
         self.balanced_disc_table_fn  = "[table] median and std of ages after balancing.csv"
         self.combined_results_fn     = "[table] combined results.csv"
         self.pad_corr_table_filename = f"[table] pairwise correlations between {self.pad_type}.xlsx"
+        self.feature_df_filename     = "[table] selected features.csv"
         ## Figures: 
         self.data_hist_fn_template   = "[hist] distributions of real and synthetic data in <GroupName>.png"
         self.data_cormat_fn_template = "[cormat] between features in <GroupName>'s <S_or_R> data.png"
@@ -118,8 +119,8 @@ class ColorDicts:
             "F": "#FF9933"
         }
         self.train_test = {
-            "Train": "#3399FF", 
-            "Test": "#FF9933"
+            "Train": "#FF1493", 
+            "Test": "#00BFFF"
         }
         self.real_synth = {
             "Real": "#FF9933", 
@@ -322,7 +323,7 @@ def load_data(config, desc, const, output_path, overwrite=False):
         train_results_DF.insert(1, "TrainTest", "Train")
         combined_results_DF = pd.concat([train_results_DF, test_results_DF])
         combined_results_DF.sort_values(
-            by=["Type", "AgeGroup", "Sex", "TrainTest"], ascending=False
+            by=["Type"] + desc.label_cols + ["TrainTest"], ascending=False
         ).to_csv(output_path, index=False)
 
         # trainset_info_DF = pd.concat(trainset_infos, ignore_index=True)
@@ -366,7 +367,8 @@ def plot_age_pred_corr(combined_results_DF, y_lab, color_hue, color_dict,
         fig = plt.figure(figsize=fig_size, dpi=dpi)
         g = sns.scatterplot(
             data=combined_results_DF, x="Age", y=y_lab, 
-            hue=color_hue, palette=color_dict
+            hue=color_hue, palette=color_dict, 
+            legend=False
         )
         plt.plot(
             g.get_xlim(), g.get_ylim(), color="k", linewidth=1, linestyle="--"
@@ -377,7 +379,7 @@ def plot_age_pred_corr(combined_results_DF, y_lab, color_hue, color_dict,
         g.set_title(f"r = {r:.2f}, {p_print}, N = {N:.0f}")
         g.set_xlabel("Real age")
         g.set_ylabel("Predicted age")
-        g.get_legend().set_title("")
+        # g.get_legend().set_title("")
         plt.tight_layout()
         plt.savefig(output_path)
         plt.close()
@@ -1031,6 +1033,11 @@ def main():
                 output_path=file_path,
                 overwrite=args.overwrite
             )
+    plot_color_legend(
+        color_dict=color_dicts.train_test, 
+        output_path=os.path.join(config.output_folder, "[color legend] Train & Test.png"),
+        fig_size=(2, .5), n_cols=2, box_size=0.5, overwrite=args.overwrite
+    )
 
     ## If the data was synthetized, compare real and synthetic data for each group:
     if desc.data_synthetized: 
@@ -1045,7 +1052,7 @@ def main():
 
             ## Plot data distribution and compute K-L divergence (of the first two features selected based on PCA-based ranking in each feature orientation):
             targ_col_list = plot_data_dist(
-                data_DF, age_group, sex, selected_features, color_dict.real_synth, 
+                data_DF, age_group, sex, selected_features, color_dicts.real_synth, 
                 os.path.join(config.output_folder, config.data_hist_fn_template.replace("<GroupName>", group_name)), 
                 overwrite=args.overwrite
             )
@@ -1118,9 +1125,9 @@ def main():
         )
         
     plot_color_legend(
-        color_dict = color_dicts.pad_bars, 
+        color_dict=color_dicts.pad_bars, 
         # color_dict=dict(zip(["PAD", "PAD_ac"], sns.color_dicts("dark", 2))), 
-        output_path=os.path.join(config.output_folder, "PAD color legends.png"),
+        output_path=os.path.join(config.output_folder, "[color legend] PAD & PAD_ac.png"),
         fig_size=(2, .5), n_cols=2, box_size=0.5, overwrite=args.overwrite
     )
 
@@ -1220,6 +1227,8 @@ def main():
     )
 
     ## Make a dataframe with hierachical labels for selected features:
+    feature_DF_list = [] # to concat and save to .csv
+
     for ori_name in desc.feature_orientations: 
 
         ## One dataframe per group:
@@ -1229,6 +1238,12 @@ def main():
             ) 
             for group_name, feature_list in selected_features[ori_name].items()
         }
+
+        for group_name, feature_DF in feature_DF_dict.items(): 
+            feature_df = pd.DataFrame(feature_DF)
+            feature_df.insert(0, "Type", ori_name[:3])
+            feature_df.insert(1, "Group", group_name)
+            feature_DF_list.append(feature_df)
 
         ## Prepare annotation for each subplot:
         subplot_annots, fig_titles = {}, {}
@@ -1271,6 +1286,25 @@ def main():
                 num=True, 
                 overwrite=args.overwrite
             )
+
+    ## Save the feature dataframe:
+    feature_DF_long = pd.concat(feature_DF_list)
+    feature_DF_long.rename(columns={
+        "feature"     : "Feature", 
+        "domain"      : "Level_2", 
+        "domain_num"  : "L2_num", 
+        "approach"    : "Level_1", 
+        "approach_num": "L1_num"
+    }, inplace=True)
+    feature_DF_long = feature_DF_long.loc[:, [
+        "Type", "Group", "Level_1", "L1_num", "Level_2", "L2_num" # , "Feature"
+    ]]
+    feature_DF_long.drop_duplicates(inplace=True)
+
+    output_path = os.path.join(config.output_folder, config.feature_df_filename)
+    if not os.path.exists(os.path.dirname(output_path)) or args.overwrite:
+        feature_DF_long.to_csv(output_path, index=False)
+        print(f"\nFeature dataframe saved to:\n{output_path}")
 
 ## Finally: ---------------------------------------------------------------------------
 

@@ -8,6 +8,9 @@ import numpy as np
 import pandas as pd
 import itertools 
 from scipy import stats
+import seaborn as sns
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 
 ## Define functions -------------------------------------------------------------------
 
@@ -34,10 +37,17 @@ def load_data(input_folder, desc):
         for label in desc.label_list:
             if desc.sep_sex:
                 age_group, sex = label
+                if age_group == "all":
+                    group = sex
+                else:
+                    group = {"le-44": "Y", "ge-45": "O"}[age_group] + sex
                 data_path = os.path.join(input_folder, f"results_{age_group}_{sex}_{ori_name}.json")
             else:
-                age_group = label
-                data_path = os.path.join(input_folder, f"results_{age_group}_{ori_name}.json")
+                if label == "all":
+                    group = label
+                else:
+                    group = {"le-44": "Y", "ge-45": "O"}[label]
+                data_path = os.path.join(input_folder, f"results_{label}_{ori_name}.json")
 
             with open(data_path, 'r', errors='ignore') as f:
                 results = json.load(f)
@@ -46,11 +56,106 @@ def load_data(input_folder, desc):
                 })
                 selected_results["SID"] = [ x.replace("sub-0", "") for x in results[desc.sid_name] ]
                 selected_results["Type"] = ori_name
-                selected_results["AgeGroup"] = age_group
-                selected_results["Sex"] = sex if desc.sep_sex else None
+                selected_results["Group"] = group
+                selected_results["PAD"] = selected_results["PredictedAgeDifference"].abs()
+                selected_results["PAD_ac"] = selected_results["CorrectedPAD"].abs()
                 selected_result_list.append(selected_results)
 
     return pd.concat(selected_result_list, ignore_index=True)
+
+def plot_categorical_bars(result_DF, pad_col, version_list, color_dict):
+    sns.set_theme(style="whitegrid")
+    sns.set_context("talk", font_scale=1.2)
+    g = sns.catplot(
+        data=result_DF, x="Group", y=pad_col, kind="bar", errorbar="se", sharex=False, 
+        col="Version", col_order=version_list,
+        hue="Version", hue_order=version_list, palette=color_dict, 
+        height=5, aspect=.6, alpha=.8, legend=None
+    )
+    for col_val, ax in g.axes_dict.items():
+        pad_mean = result_DF.query(f"Version == '{col_val}'")[pad_col].mean()
+        ax.axhline(
+            y=pad_mean, color=color_dict[col_val], linestyle='--'
+        )
+        x_pos = ax.get_xaxis().get_majorticklocs()
+        ax.text(
+            x=(x_pos[0] + x_pos[-1]) / 2, 
+            y=ax.get_ylim()[1] + .1, 
+            s=f"mean = {pad_mean:.2f}", 
+            ha="center", va="bottom", color="k", fontsize=24
+        )
+        ax.set_title("")
+        ax.tick_params(axis="both", which="major", labelsize=20)
+    g.set_xlabels("")
+    g.set_ylabels("")
+
+    return g
+
+def plot_bars_with_stats(result_DF, pad_col, version_list, stats_DF, color_dict, 
+                         potential_y_lim=None, print_p=False):
+    y_pos = max([stats_DF["V1_mean"].max(), stats_DF["V2_mean"].max()])
+    y_offset = max([y_pos, potential_y_lim]) * .2
+    p_offset = max([y_pos, potential_y_lim]) * .05
+    sns.set_theme(style="whitegrid")
+    sns.set_context("talk", font_scale=1.2)
+    plt.figure(figsize=(6, 5))
+    g = sns.barplot(
+        data=result_DF, x="Version", y=pad_col, order=version_list, 
+        hue="Version", hue_order=version_list, palette=color_dict, 
+    )
+    for x1, x2 in itertools.combinations(range(len(version_list)), 2):
+        x_pos_1 = g.get_xaxis().get_majorticklocs()[x1]
+        x_pos_2 = g.get_xaxis().get_majorticklocs()[x2]
+        v1, v2 = version_list[x1], version_list[x2]
+        stats_res = stats_DF.query(f"V1 == '{v1}' & V2 == '{v2}'")
+        if len(stats_res) == 0:
+            stats_res = stats_DF.query(f"V1 == '{v2}' & V2 == '{v1}'")
+        p_val = stats_res.iloc[0]["P_value"]
+        if p_val < .05:
+            y_pos += y_offset
+            g.plot(
+                [x_pos_1, x_pos_2], [y_pos, y_pos], color="k", lw=1.5
+            )
+            p_sig = stats_res.iloc[0]["P_sig"]
+            if print_p:
+                p_sig = "< .001 ***" if p_val < .001 else f"{p_val:.3f} {p_sig}"
+                y_pos += p_offset 
+            else:
+                y_pos -= p_offset
+            g.text(
+                (x_pos_1 + x_pos_2) / 2, y_pos, p_sig, 
+                ha="center", va="bottom", fontsize=24, fontdict={"style": "italic"}
+            )
+    g.spines["right"].set_visible(False)
+    g.spines["top"].set_visible(False)
+    g.set_xlabel("")
+    g.set_ylabel("")
+    g.set_xticks(g.get_xaxis().get_majorticklocs())
+    g.set_xticklabels([ f"#{i+1}" for i in range(len(version_list))], fontsize=20)
+    g.tick_params(axis="y", which="major", labelsize=20)
+
+    return g
+
+def plot_color_legend(color_dict, fig_size, output_path, box_size=.3):
+    fig, ax = plt.subplots(figsize=fig_size)
+    ax.axis("off")
+    for idx, (label, color) in enumerate(color_dict.items()):
+        rect = mpatches.Rectangle(
+            (idx*3, 0), # 3 is the horizontal spacing unit
+            width=box_size, height=box_size, color=color
+        )
+        ax.add_patch(rect)
+        ax.text(
+            x=(idx*3 + box_size + .2), # 0.2 units to the right of the color block
+            y=(box_size / 2), # half the height of the color block
+            s=f"[{idx+1}] {label}", ha='left', va='center', fontsize=12
+        )
+    ax.set_xlim(-.5, len(color_dict)*3) # start from -0.5 to make the first color block not touch the edge
+    ax.set_ylim(-.1, box_size + .1) # leave some space at the top and bottom
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=200)
+    plt.close()
+    print(f"\nColor legend is saved to:\n{output_path}")
 
 ## Main execution ---------------------------------------------------------------------
 
@@ -97,15 +202,27 @@ if __name__ == "__main__":
             os.path.join("derivatives", "2025-06-02_down-sampled_seed=9865_compare")
         )
     ][int(sys.argv[1])]
-    print(f"\n# Version comparison: {note}\n")
+    version_list = list(input_folders.keys())
+    print(f"\n# Version comparison: {note}")
 
+    ## Make output folder
     os.makedirs(output_folder, exist_ok=True)
 
+    ## Save version notes
     notes = {"Note": note}
     notes.update(input_folders)
     with open(os.path.join(output_folder, "version notes.json"), 'w', encoding="utf-8") as f:
         json.dump(notes, f, ensure_ascii=False)
 
+    ## Setup color legend (and save)
+    color_dict = dict(zip(version_list, sns.color_palette("husl", len(version_list))))
+    plot_color_legend(
+        color_dict=color_dict, 
+        fig_size=(len(version_list)*2, .5),
+        output_path=os.path.join(output_folder, f"color_legend.png")
+    )
+
+    ## Load data
     result_DF_list = []
     for version, input_folder in input_folders.items():
         desc = load_description(input_folder)
@@ -115,22 +232,21 @@ if __name__ == "__main__":
 
     final_result_DF = pd.concat(result_DF_list, ignore_index=True)
 
-    for pad_name, pad_col in zip(
-        ["PAD", "PADAC"], 
-        ["PredictedAgeDifference", "CorrectedPAD"]
-    ):
+    for pad_name, pad_col in zip(["PAD", "PADAC"], ["PAD", "PAD_ac"]):
+
+        ## Statistics:
         out_file = os.path.join(output_folder, f"compare_{pad_name}s.csv")
 
         stats_results = []
         for ori_name in desc.feature_orientations:
-            for ver_1, ver_2 in itertools.combinations(input_folders.keys(), 2):
 
+            for ver_1, ver_2 in itertools.combinations(input_folders.keys(), 2):
                 V1_abs = final_result_DF.query(
                     f"Type == '{ori_name}' & Version == '{ver_1}'"
-                )[pad_col].abs()
+                )[pad_col]
                 V2_abs = final_result_DF.query(
                     f"Type == '{ori_name}' & Version == '{ver_2}'"
-                )[pad_col].abs()
+                )[pad_col]
 
                 ## Levene's test for homogeneity of variance:
                 levene_stats, levene_p = stats.levene(V1_abs, V2_abs)                
@@ -179,6 +295,46 @@ if __name__ == "__main__":
 
         stats_DF = pd.concat(stats_results, ignore_index=True)
         stats_DF.to_csv(out_file, index=False)
-        print(f"Saved: {out_file}\n")
+        print(f"\nStats results is saved to:\n{out_file}")
 
-    print("Done!\n")
+        ## Plots:
+        for ori_name in desc.feature_orientations:
+            print(f"\nPlotting for {ori_name[:3]}...")
+
+            g1_outpath = os.path.join(output_folder, f"compare_{ori_name[:3]}_{pad_name}s_bars.png")
+            g1 = plot_categorical_bars(
+                result_DF=final_result_DF.query(f"Type == '{ori_name}'"), 
+                pad_col=pad_col, 
+                version_list=version_list, 
+                color_dict=color_dict
+            )
+
+            g2_outpath = os.path.join(output_folder, f"compare_{ori_name[:3]}_{pad_name}s_with_stats.png")
+            g2 = plot_bars_with_stats(
+                result_DF=final_result_DF.query(f"Type == '{ori_name}'"), 
+                pad_col=pad_col, 
+                version_list=version_list, 
+                color_dict=color_dict, 
+                stats_DF=stats_DF.query(f"Type == '{ori_name[:3]}'"), 
+                potential_y_lim=g1.axes[0, 0].get_ylim()[1]
+            )
+
+            ## Ensure the same y-limits
+            y_lim = max([
+                g1.axes[0, 0].get_ylim()[1], 
+                g2.get_ylim()[1]
+            ])
+
+            g1.set(ylim=(0, y_lim))
+            g1.figure.tight_layout()
+            g1.figure.savefig(g1_outpath)
+            print(f"\nCategorical bar plot of {pad_col} is saved to:\n{g1_outpath}")
+            plt.close(g1.figure)
+
+            g2.set(ylim=(0, y_lim))
+            g2.figure.tight_layout()
+            g2.figure.savefig(g2_outpath)
+            print(f"\nBar plot with stats of {pad_col} is saved to:\n{g2_outpath}")
+            plt.close(g2.figure)
+    
+    print("\nDone!\n")
