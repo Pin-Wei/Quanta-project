@@ -19,7 +19,7 @@ import plotly.express as px
 import plotly.io as pio
 from plotly.subplots import make_subplots
 
-from utils import standardized_feature_list, domain_approach_mapping_dict
+from utils import basic_Q_features, ST_features, domain_approach_mapping_dict
 
 ## Argument parser: -------------------------------------------------------------------
 
@@ -756,6 +756,8 @@ def plot_scatter_from_corr(corr_DF, group_name, wide_sub_DF, t1, t2, grouping_co
         plt.close()
         print(f"\nCorrelation plot is saved to:\n{output_path}")
 
+def 
+
 def make_feature_DF(ori_name, feature_list, domain_approach_mapping):
     '''
     Make a DataFrame containing the domain and approach labels for each feature, 
@@ -1001,7 +1003,8 @@ def main():
     desc = load_description(config, const)
     color_dicts = ColorDicts()
 
-    standardized_features = standardized_feature_list()
+    basic_q_features = basic_Q_features()
+    st_features = ST_features()
     domain_approach_mapping = domain_approach_mapping_dict()
 
     pad_type = config.pad_type # for correlations 
@@ -1166,35 +1169,39 @@ def main():
             overwrite=args.overwrite
         )
         
-        ## Plot correlation matrices with standardized features:         
-        fn2 = fn.replace("in", "& standardized features in")
-        plot_cormat(
-            wide_sub_DF=wide_sub_DF.merge(
-                data_DF.loc[:, ["SID"]+standardized_features], 
-                on="SID", how="left"
-            ), 
-            targ_cols=standardized_features, 
-            corrwith_cols=[ x[:3] for x in desc.feature_orientations ], 
-            x_col_names=[ x[:3] for x in desc.feature_orientations ], 
-            y_col_names=standardized_features, yr=90, 
-            output_path=os.path.join(config.output_folder, fn2), 
-            figsize=(8, 6),
-            overwrite=args.overwrite
-        )
+        ## Plot correlation matrices with questionnaire/standardized features:
+        for feature_type, feature_list, fh in [
+            ("questionnaire", basic_q_features, 15), 
+            ("standardized", st_features, 8)
+        ]:
+            fn2 = fn.replace("in", f"& {feature_type} features in")
+            plot_cormat(
+                wide_sub_DF=wide_sub_DF.merge(
+                    data_DF.loc[:, ["SID"]+feature_list], 
+                    on="SID", how="left"
+                ), 
+                targ_cols=feature_list, 
+                corrwith_cols=[ x[:3] for x in desc.feature_orientations ], 
+                x_col_names=[ x[:3] for x in desc.feature_orientations ], 
+                y_col_names=feature_list, yr=90, 
+                output_path=os.path.join(config.output_folder, fn2), 
+                figsize=(fh, 6),
+                overwrite=args.overwrite
+            )
 
     ## Plot correlation matrices with standardized features for all groups:
     wide_DF = (
         pd.concat(list(wide_sub_DF_dict.values()))
-        .merge(data_DF.loc[:, ["SID"]+standardized_features], on="SID", how="left")
+        .merge(data_DF.loc[:, ["SID"]+st_features], on="SID", how="left")
     )     
     fn3 = config.pad_cormat_fn_template.replace("in <GroupName>", 
                                                 f"& standardized features across all groups (N={len(wide_DF)})") 
     plot_cormat(
         wide_sub_DF=wide_DF, 
-        targ_cols=standardized_features, 
+        targ_cols=st_features, 
         corrwith_cols=[ x[:3] for x in desc.feature_orientations ], 
         x_col_names=[ x[:3] for x in desc.feature_orientations ], 
-        y_col_names=standardized_features, yr=90, 
+        y_col_names=st_features, yr=90, 
         output_path=os.path.join(config.output_folder, fn3), 
         figsize=(8, 6),
         overwrite=args.overwrite

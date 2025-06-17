@@ -70,7 +70,9 @@ parser.add_argument("-psf", "--preselected_feature_folder", type=str, default=No
                     help="The folder where the result files (.json) containing the selected features are stored.")
 parser.add_argument("-fsm", "--feature_selection_method", type=int, default=0, 
                     help="The method to select features.")
-parser.add_argument("--max_features", type=int, default=None, 
+parser.add_argument("-fst", "--fs_thresh_method", type=int, default=1, 
+                    help="The method to determine the threshold for feature selection (0: 'threshold', 1: 'explained_ratio').")
+parser.add_argument("-mfn", "--max_feature_num", type=int, default=None, 
                     help="The maximum number of features to be selected.")
 # parser.add_argument("--no_pca", action="store_true", default=False, 
 #                     help="Do not use PCA for feature selection.")
@@ -82,7 +84,7 @@ parser.add_argument("-pmf", "--pretrained_model_folder", type=str, default=None,
 parser.add_argument("-m", "--training_model", type=int, default=None, 
                     help="The type of the model to be used for training (0: 'ElasticNet', 1: 'RF', 2: 'CART', 3: 'LGBM', 4: 'XGBM').")
 parser.add_argument("-i", "--ignore", type=int, default=0, 
-                    help="Ignore the first N iterations (in case you might be interrupted by an error and don't want to start from the beginning).")
+                    help="Ignore the first N iterations (in case the script was interrupted by an accident and you don't want to start from the beginning).")
 parser.add_argument("-s", "--seed", type=int, default=None, 
                     help="The value used to initialize all random number generator.")
 ## Age correction:
@@ -102,6 +104,7 @@ class Config:
         self.by_gender = [False, True][args.by_gender]
         self.testset_ratio = args.testset_ratio
         self.feature_selection_method = [None, "LassoCV", "ElasticNetCV", "RF-Permute", "LGBM-SHAP"][args.feature_selection_method]
+        self.fs_thresh_method = ["ftxed_threshold", "explained_ratio"][args.fs_thresh_method]
         self.age_correction_method = ["Zhang et al. (2023)", "Beheshti et al. (2019)"][args.age_correction_method]
         self.age_correction_groups = ["wais_8_seg", "every_5_yrs"][0]
 
@@ -224,20 +227,17 @@ class Constants:
                 "bootstrap": 78
             }
         }
-        ## The number of features to select (if not using PCA):
-        self.feature_num = 50
         ## Number of parallel threads to use:
         self.n_jobs = 16
 
 class FeatureSelector:
-    def __init__(self, method, thresh_method, seed, 
-                 threshold=1e-5, max_features=None, explained_ratio=.9, n_jobs=16):
+    def __init__(self, method, thresh_method, threshold, explained_ratio, max_feature_num, seed, n_jobs=16):
         self.method = method
         self.seed = seed
         self.thresh_method = thresh_method
         self.threshold = threshold
-        self.max_features = max_features
         self.explained_ratio = explained_ratio
+        self.max_feature_num = max_feature_num
         self.n_jobs = n_jobs
 
     def fit(self, X: pd.DataFrame, y):
@@ -251,9 +251,10 @@ class FeatureSelector:
          - may not be suitable
 
         SHAP (SHapley Additive exPlanations): https://shap.readthedocs.io/en/latest/
-        - see 1: https://medium.com/analytics-vidhya/shap-part-1-an-introduction-to-shap-58aa087a460c
+        - see 1: https://christophm.github.io/interpretable-ml-book/shapley.html
         - see 2: https://ithelp.ithome.com.tw/articles/10329606
-        - see 3: https://medium.com/@msvs.akhilsharma/unlocking-the-power-of-shap-analysis-a-comprehensive-guide-to-feature-selection-f05d33698f77
+        - see 3: https://medium.com/analytics-vidhya/shap-part-1-an-introduction-to-shap-58aa087a460c
+        - see 4: https://medium.com/@msvs.akhilsharma/unlocking-the-power-of-shap-analysis-a-comprehensive-guide-to-feature-selection-f05d33698f77
         '''
         if self.method == "LassoCV":
             importances = LassoCV(
@@ -280,7 +281,7 @@ class FeatureSelector:
             # first_features = [ v[0] for v in cid_to_fids.values() ] # select the first feature in each cluster
             X_train, X_test, y_train, y_test = train_test_split(
                 # X.iloc[:, first_features], y, test_size=.3, random_state=self.seed
-                X, y, test_size=.3, random_state=self.seed
+                X, y, test_size=.2, random_state=self.seed
             )
             rf_trained = RandomForestRegressor(
                 random_state=self.seed, n_jobs=self.n_jobs
@@ -290,14 +291,15 @@ class FeatureSelector:
                 n_repeats=10, random_state=self.seed, n_jobs=self.n_jobs
             ).importances_mean
 
-        # elif self.method == "LightGBM": # impurity-based feature importance
-        #     importances = LGBMRegressor(
-        #         importance_type=["split", "gain"][1], random_state=self.seed
-        #     ).fit(X, y).feature_importances_
+        elif self.method == "LightGBM": # impurity-based feature importance
+            # importances = LGBMRegressor(
+            #     importance_type=["split", "gain"][1], random_state=self.seed
+            # ).fit(X, y).feature_importances_
+            raise NotImplementedError("LightGBM impurity-based feature importance should not be used.")
 
         elif self.method == "LGBM-SHAP": 
             X_train, X_test, y_train, y_test = train_test_split(
-                X, y, test_size=.3, random_state=self.seed
+                X, y, test_size=.2, random_state=self.seed
             )
             lgbm_trained = LGBMRegressor(
                 min_child_samples=5, random_state=self.seed, n_jobs=self.n_jobs
@@ -316,8 +318,8 @@ class FeatureSelector:
         elif self.thresh_method == "threshold":
             selected_feature_imp = feature_importances[feature_importances.abs() > self.threshold]
 
-        if self.max_features is not None:
-            selected_feature_imp = selected_feature_imp.head(self.max_features)
+        if self.max_feature_num is not None:
+            selected_feature_imp = selected_feature_imp.head(self.max_feature_num)
            
         self.feature_importances = selected_feature_imp
         self.selected_features = list(selected_feature_imp.index)
@@ -326,19 +328,6 @@ class FeatureSelector:
     
     def transform(self, X):
         return X[self.selected_features]
-
-class FrozenTrialAdapter: # A mock object to simulate a trial for best_params
-    def __init__(self, best_params):
-        self.best_params = best_params
-
-    def suggest_int(self, name, low, high, **kwargs):
-        return self.best_params[name]
-
-    def suggest_float(self, name, low, high, **kwargs):
-        return self.best_params[name]
-
-    def suggest_categorical(self, name, choices):
-        return self.best_params[name]
 
 ## Functions: =========================================================================
 
@@ -518,8 +507,7 @@ def preprocess_grouped_dataset(X, y, ids, testset_ratio, trained_scaler, seed):
         "scaler": scaler if trained_scaler is None else trained_scaler
     }
 
-def build_pipline(trial: optuna.trial.Trial, 
-                  fs_method, max_features, model_name, seed, n_jobs=16):
+def build_pipline(params, model_name, seed, n_jobs=16):
     '''
     Return:
     - (sklearn.pipeline.Pipeline): A pipeline of feature selection and regression model.
@@ -527,61 +515,60 @@ def build_pipline(trial: optuna.trial.Trial,
     '''
     ## Feature selection:
     selector = FeatureSelector(
-        method=trial.suggest_categorical("method", [
-            "LassoCV", "ElasticNetCV", "RF-Permute", "LGBM-SHAP"
-        ]) if fs_method is None else fs_method, 
-        thresh_method=["threshold", "explained_ratio"][1], 
-        threshold=trial.suggest_float('threshold', 1e-5, 0.001),
-        max_features=max_features, 
-        # explained_ratio=trial.suggest_float('explained_ratio', 0.9, 1),
+        method=params["method"], 
+        thresh_method=params["thresh_method"], 
+        threshold=params["threshold"], 
+        explained_ratio=params["explained_ratio"],
+        max_feature_num=params["max_feature_num"], 
         seed=seed, 
         n_jobs=n_jobs
     )
     
     ## Regression model:
-    if model_name == "ElasticNet": 
+    if model_name == "ElasticNet":
         model = ElasticNet(
-            alpha=trial.suggest_float('alpha', 1e-5, 1, log=True), 
-            l1_ratio=trial.suggest_float('l1_ratio', 0, 1), 
-            random_state=seed, 
-            n_jobs=n_jobs
+            alpha=params["alpha"],
+            l1_ratio=params["l1_ratio"],
+            random_state=seed
         )
-    elif model_name == "CART": 
+
+    elif model_name == "CART":
         model = DecisionTreeRegressor(
-            max_depth=trial.suggest_int('max_depth', 2, 32), 
-            min_samples_split=trial.suggest_int('min_samples_split', 2, 20), 
-            random_state=seed, 
-            n_jobs=n_jobs
+            max_depth=params["max_depth"],
+            min_samples_split=params["min_samples_split"],
+            random_state=seed
         )
-    elif model_name == "RF": 
+
+    elif model_name == "RF":
         model = RandomForestRegressor(
-            n_estimators=trial.suggest_int('n_estimators', 10, 200), 
-            max_depth=trial.suggest_int('max_depth', 2, 32), 
-            random_state=seed, 
+            n_estimators=params["n_estimators"],
+            max_depth=params["max_depth"],
+            random_state=seed,
             n_jobs=n_jobs
         )
-    elif model_name == "XGBM": 
+
+    elif model_name == "XGBM":
         model = XGBRegressor(
-            max_depth=trial.suggest_int('max_depth', 1, 9),
-            learning_rate=trial.suggest_float('learning_rate', 1e-4, 1.0, log=True),
-            n_estimators=trial.suggest_int('n_estimators', 100, 1000),
-            min_child_weight=trial.suggest_int('min_child_weight', 1, 10),
-            subsample=trial.suggest_float('subsample', 0.1, 1.0),
-            colsample_bytree=trial.suggest_float('colsample_bytree', 0.1, 1.0),
-            # tree_method='hist', # If GPU is not available
-            random_state=seed, 
+            max_depth=params["max_depth"],
+            learning_rate=params["learning_rate"],
+            n_estimators=params["n_estimators"],
+            min_child_weight=params["min_child_weight"],
+            subsample=params["subsample"],
+            colsample_bytree=params["colsample_bytree"],
+            random_state=seed,
             n_jobs=n_jobs
         )
-    elif model_name == "LGBM": 
+
+    elif model_name == "LGBM":
         model = LGBMRegressor(
             metric='mae',
-            num_leaves=trial.suggest_int('num_leaves', 2, 256),
-            learning_rate=trial.suggest_float('learning_rate', 1e-4, 1.0, log=True),
-            feature_fraction=trial.suggest_float('feature_fraction', 0.1, 1.0),
-            bagging_fraction=trial.suggest_float('bagging_fraction', 0.1, 1.0),
-            bagging_freq=trial.suggest_int('bagging_freq', 1, 7),
-            min_child_samples=trial.suggest_int('min_child_samples', 5, 100),
-            random_state=seed, 
+            num_leaves=params["num_leaves"],
+            learning_rate=params["learning_rate"],
+            feature_fraction=params["feature_fraction"],
+            bagging_fraction=params["bagging_fraction"],
+            bagging_freq=params["bagging_freq"],
+            min_child_samples=params["min_child_samples"],
+            random_state=seed,
             n_jobs=n_jobs
         )
 
@@ -590,18 +577,86 @@ def build_pipline(trial: optuna.trial.Trial,
         ("regressor", model)
     ])
 
-def optimize_objective(trial: optuna.trial.Trial, 
-                       X, y, fs_method, max_features, model_name, seed, n_jobs=16): 
+def optimize_objective(trial, X, y, fs_method, thresh_method, max_feature_num, model_name, seed, n_jobs=16): 
     '''
     Return:
     - (float): Average mean absolute error (MAE) score across cross validation.
     '''
-    pipeline = build_pipline(
-        trial, fs_method, max_features, model_name, seed, n_jobs
-    )
+    ## Set up feature selection parameters:
+    if fs_method is None:
+        params = {
+            "method": trial.suggest_categorical("fs_method", ["LassoCV", "ElasticNetCV", "RF-Permute", "LGBM-SHAP"]), 
+            "thresh_method": thresh_method, 
+            "max_feature_num": max_feature_num
+        }
+    else:
+        params = {
+            "method": fs_method, 
+            "thresh_method": thresh_method, 
+            "max_feature_num": max_feature_num
+        }
 
+    if params["thresh_method"] == "ftxed_threshold":
+        params.update({
+            "threshold": trial.suggest_float("threshold", 1e-5, 0.001), 
+            "explained_ratio": None
+        })
+
+    elif params["thresh_method"] == "explained_ratio":
+        params.update({
+            "explained_ratio": trial.suggest_float('explained_ratio', 0.9, 1), 
+            "threshold": None
+        })
+
+    ## Record feature selection parameters:
+    for k, v in params.items():
+        if v is not None:
+            trial.set_user_attr(f"fs_{k}", v)
+    
+    ## Set up model parameters:
+    if model_name == "ElasticNet":
+        params.update({
+            "alpha": trial.suggest_float("alpha", 1e-5, 1.0, log=True),
+            "l1_ratio": trial.suggest_float("l1_ratio", 0.0, 1.0)
+        })
+
+    elif model_name == "CART":
+        params.update({
+            "max_depth": trial.suggest_int("max_depth", 2, 32),
+            "min_samples_split": trial.suggest_int("min_samples_split", 2, 20)
+        })
+
+    elif model_name == "RF":
+        params.update({
+            "n_estimators": trial.suggest_int("n_estimators", 10, 200),
+            "max_depth": trial.suggest_int("max_depth", 2, 32)
+        })
+
+    elif model_name == "XGBM":
+        params.update({
+            "max_depth": trial.suggest_int("max_depth", 1, 9),
+            "learning_rate": trial.suggest_float("learning_rate", 1e-4, 1.0, log=True),
+            "n_estimators": trial.suggest_int("n_estimators", 100, 1000),
+            "min_child_weight": trial.suggest_int("min_child_weight", 1, 10),
+            "subsample": trial.suggest_float("subsample", 0.1, 1.0),
+            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.1, 1.0)
+        })
+
+    elif model_name == "LGBM":
+        params.update({
+            "num_leaves": trial.suggest_int("num_leaves", 2, 256),
+            "learning_rate": trial.suggest_float("learning_rate", 1e-4, 1.0, log=True),
+            "feature_fraction": trial.suggest_float("feature_fraction", 0.1, 1.0),
+            "bagging_fraction": trial.suggest_float("bagging_fraction", 0.1, 1.0),
+            "bagging_freq": trial.suggest_int("bagging_freq", 1, 7),
+            "min_child_samples": trial.suggest_int("min_child_samples", 5, 100)
+        })
+
+    pipline = build_pipline(
+        params, model_name, seed, n_jobs
+    )
     neg_mae_scores = cross_val_score(
-        estimator=pipeline, X=X, y=y, 
+        estimator=pipline, X=X, y=y, 
         cv=KFold(n_splits=5, shuffle=True, random_state=seed), 
         scoring="neg_mean_absolute_error", 
         n_jobs=n_jobs, 
@@ -610,7 +665,7 @@ def optimize_objective(trial: optuna.trial.Trial,
 
     return -1 * np.mean(neg_mae_scores)
 
-def train_and_evaluate(X, y, fs_method, max_features, model_names, seed, n_jobs=16):
+def train_and_evaluate(X, y, fs_method, thresh_method, max_feature_num, model_names, seed, n_jobs=16):
     '''
     Inputs:
     - X (pd.DataFrame)  : Feature matrix.
@@ -633,46 +688,35 @@ def train_and_evaluate(X, y, fs_method, max_features, model_names, seed, n_jobs=
                 ## automatically selects an algorithm internally, see: https://medium.com/optuna/autosampler-automatic-selection-of-optimization-algorithms-in-optuna-1443875fd8f9
         )
         study.optimize(
-            lambda trial: optimize_objective(trial, X, y, fs_method, max_features, model_name, seed, n_jobs),
-            n_trials=50, # number of hyperparameter combinations to try
-            show_progress_bar=True
+            lambda trial: optimize_objective(
+                trial, X, y, fs_method, thresh_method, max_feature_num, model_name, seed, n_jobs
+            ),
+            n_trials=50, show_progress_bar=True
         )
         logging.info("Parameter optimization is completed :-)")
 
-        ## The best feature selector and model with the best hyperparameters:
-        best_trial = FrozenTrialAdapter(study.best_params)
+        ## Refit the model with the best hyperparameters found:
         best_pipeline = build_pipline(
-            best_trial, fs_method, max_features, model_name, seed
+            study.best_params, model_name, seed, n_jobs
         )
-
-        ## Calculate the mean and standard deviation of mean absolute error:
-        kf = KFold(n_splits=5, shuffle=True, random_state=seed)
-        mae_scores = []
-
-        for n_fold, (train_index, val_index) in enumerate(kf.split(X)):
-            logging.info(f"Evaluating {model_name}, fold {n_fold+1} ...")
-            X_train, X_val = X.iloc[train_index], X.iloc[val_index]
-            y_train, y_val = y.iloc[train_index], y.iloc[val_index]
-
-            best_pipeline.fit(X_train, y_train)
-            y_pred = best_pipeline.predict(X_val)
-            mae_scores.append(mean_absolute_error(y_val, y_pred))
-
-        selector = best_pipeline.named_steps["feature_selector"]
+        mae_scores = -1 * cross_val_score(
+            estimator=best_pipeline, X=X, y=y, 
+            cv=KFold(n_splits=5, shuffle=True, random_state=seed), 
+            scoring="neg_mean_absolute_error", 
+            n_jobs=n_jobs, 
+            verbose=1
+        )
 
         ## Storing results:
         results[model_name] = {
-            "fs_method": selector.method, 
-            "fs_thresh_method": selector.thresh_method, 
-            "fs_threshold": selector.threshold, 
-            "selected_features": selector.selected_features, 
-            "feature_importances": selector.feature_importances, 
             "trained_model": best_pipeline.named_steps["regressor"],  
-            "model_params": study.best_params, 
+            "selected_features": best_pipeline.named_steps["feature_selector"].selected_features, 
+            "feature_importances": best_pipeline.named_steps["feature_selector"].feature_importances, 
+            "cv_scores": mae_scores, 
             "mae_mean": np.mean(mae_scores), 
-            "mae_std": np.std(mae_scores),
-            "cv_scores": mae_scores
+            "mae_std": np.std(mae_scores)
         }
+        results[model_name] = results[model_name].update(study.best_params)
 
     return results
 
@@ -864,7 +908,8 @@ def main():
         "UsePreviouslySelectedFeatures": args.preselected_feature_folder, 
         "FeatureOrientations": list(constant.domain_approach_mapping.keys()), 
         "FeatureSelectionMethod": config.feature_selection_method, 
-        "FeatureNumMax": args.max_features, 
+        "FSThresholdMethod": config.fs_thresh_method,
+        "MaxFeatureNum": args.max_feature_num, 
         "IncludedOptimizationModels": print_included_models, 
         "SkippedIterationNum": args.ignore,  
         "AgeCorrectionMethod": config.age_correction_method, 
@@ -994,7 +1039,7 @@ def main():
             for ori_name, ori_content in constant.domain_approach_mapping.items():
                 logging.info(f"Feature orientation: {ori_name}")
 
-                if iter < args.ignore: # skip the current iteration
+                if iter < args.ignore: 
                     logging.info(f"Skipping {iter}-th iteration :-O")
 
                 else: # do what supposed to be done
@@ -1007,7 +1052,6 @@ def main():
 
                         best_model_name = saved_results["Model"]
                         selected_features = saved_results["FeatureNames"]
-                        # mean_train_mae = saved_results["MeanTrainMAE"]
 
                         saved_model = os.path.join("outputs", args.pretrained_model_folder, f"models_{group_name}_{ori_name}_{best_model_name}.pkl")
                         with open(saved_model, 'rb') as f:
@@ -1054,7 +1098,8 @@ def main():
                                     X=X_train_included, 
                                     y=data_dict["y_train"], 
                                     fs_method=config.feature_selection_method, 
-                                    max_features=args.max_features, 
+                                    thresh_method=config.fs_threshold_method, 
+                                    max_feature_num=args.max_feature_num, 
                                     model_names=included_models, 
                                     seed=seed, 
                                     n_jobs=constant.n_jobs
@@ -1062,14 +1107,14 @@ def main():
                                 best_model_name = min(
                                     results, key=lambda x: results[x]["mae_mean"]
                                 )
-
                                 trained_model = results[best_model_name]["trained_model"]
+                                selected_features = results[best_model_name]["selected_features"]
+                                
                                 logging.info("Saving the best-performing model (.pkl) ...")
                                 model_outpath = config.model_outpath_format.format(group_name, ori_name, best_model_name)
                                 with open(model_outpath, 'wb') as f:
                                     pickle.dump(trained_model, f)
 
-                                selected_features = results[best_model_name]["selected_features"]
                                 logging.info("Saving the best selected features and their importances ...")
                                 features_outpath = config.features_outpath_format.format(group_name, ori_name, results[best_model_name]["fs_method"])
                                 results[best_model_name]["feature_importances"].to_csv(
@@ -1079,6 +1124,7 @@ def main():
                                 logging.info("Saving other models to the 'other models' folder ...")
                                 embedded_outpath = os.path.join(config.out_folder, "other models")
                                 os.makedirs(embedded_outpath, exist_ok=True)
+                                
                                 for model_name, model_result in results.items():
                                     if model_name != best_model_name: 
                                         model_outpath = os.path.join(embedded_outpath, os.path.basename(config.model_outpath_format.format(group_name, ori_name, model_name)))
@@ -1092,14 +1138,7 @@ def main():
                                 logging.info("Saving results for all models ...")
                                 model_results = {
                                     model_name: {
-                                        "fs_method": res["fs_method"], 
-                                        "selected_features": res["selected_features"], 
-                                        "feature_importances": res["feature_importances"], 
-                                        "fs_threshold": res["fs_threshold"], 
-                                        "model_params": res["model_params"], 
-                                        "mae_scores": res["cv_scores"],
-                                        "mae_mean": res["mae_mean"], 
-                                        "mae_std": res["mae_std"]
+                                        k: v for k, v in res.items() if k != "trained_model"
                                     } for model_name, res in results.items()
                                 }
                                 model_results = convert_np_types(model_results)
@@ -1150,7 +1189,6 @@ def main():
                     if data_dict["X_test"].empty: 
                         save_results = {
                             "Model": best_model_name, 
-                            # "MeanTrainMAE": mean_train_mae, 
                             "NumberOfSubjs": len(data_dict["id_train"]), 
                             "SubjID": list(data_dict["id_train"]), 
                             "Note": "Train and test sets are the same.", 
@@ -1197,7 +1235,6 @@ def main():
 
                         save_results = {
                             "Model": best_model_name, 
-                            # "MeanTrainMAE": mean_train_mae, 
                             "NumberOfTraining": len(data_dict["id_train"]), 
                             "TrainingSubjID": list(data_dict["id_train"]), 
                             "TrainingAge": list(data_dict["y_train"]), 

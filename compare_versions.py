@@ -162,45 +162,56 @@ def plot_color_legend(color_dict, fig_size, output_path, box_size=.3):
 if __name__ == "__main__":
     note, input_folders, output_folder = [
         (
-            "Original data and select features with PCA.", 
+            "Original data and select features with RF-based permutation importance.", 
             {
-                "By_Age-Sex": os.path.join("outputs", "2025-05-21_original_seed=9865"), 
-                "By_Age"    : os.path.join("outputs", "2025-05-23_original_seed=9865_sex-0"), 
-                "By_Sex"    : os.path.join("outputs", "2025-05-23_original_seed=9865_age-0"), 
-                "Undivided" : os.path.join("outputs", "2025-05-23_original_seed=9865_age-0_sex-0")
+                version: os.path.join("outputs", folder) for version, folder in 
+                dict(zip(
+                    ["By_Age-Sex", "By_Age", "By_Sex", "Undivided"], 
+                    [ f"2025-06-17_original_{suffix}" for suffix in ["", "_sex-0", "_age-0", "_age-0_sex-0"] ]
+                ))
             }, 
-            os.path.join("derivatives", "2025-05-23_original_seed=9865_compare")
-        ), 
-        (
-            "Down-sampled data and select top-50 features.", 
-            {
-                "By_Age-Sex": os.path.join("outputs", "2025-05-28_down-sampled_seed=9865"), 
-                "By_Age"    : os.path.join("outputs", "2025-05-28_down-sampled_seed=9865_sex-0"), 
-                "By_Sex"    : os.path.join("outputs", "2025-05-28_down-sampled_seed=9865_age-0"), 
-                "Undivided" : os.path.join("outputs", "2025-05-28_down-sampled_seed=9865_age-0_sex-0")
-            },
-            os.path.join("derivatives", "2025-05-28_down-sampled_seed=9865_compare")
-        ), 
-        (
-            "Original data and select top-50 features.", 
-            {
-                "By_Age-Sex": os.path.join("outputs", "2025-05-29_original_seed=9865"), 
-                "By_Age"    : os.path.join("outputs", "2025-05-29_original_seed=9865_sex-0"), 
-                "By_Sex"    : os.path.join("outputs", "2025-05-29_original_seed=9865_age-0"), 
-                "Undivided" : os.path.join("outputs", "2025-05-29_original_seed=9865_age-0_sex-0")
-            }, 
-            os.path.join("derivatives", "2025-05-29_original_seed=9865_compare")
-        ), 
-        (
-            "Down-sampled data and select features with PCA.", 
-            {
-                "By_Age-Sex": os.path.join("outputs", "2025-06-02_down-sampled_seed=9865"), 
-                "By_Age"    : os.path.join("outputs", "2025-06-02_down-sampled_seed=9865_sex-0"), 
-                "By_Sex"    : os.path.join("outputs", "2025-06-02_down-sampled_seed=9865_age-0"), 
-                "Undivided" : os.path.join("outputs", "2025-06-02_down-sampled_seed=9865_age-0_sex-0")
-            },
-            os.path.join("derivatives", "2025-06-02_down-sampled_seed=9865_compare")
+            os.path.join("derivatives", "2025-06-17_original_compare")
         )
+        # (
+        #     "Original data and select features with PCA.", 
+        #     {
+        #         "By_Age-Sex": os.path.join("outputs", "2025-05-21_original_seed=9865"), 
+        #         "By_Age"    : os.path.join("outputs", "2025-05-23_original_seed=9865_sex-0"), 
+        #         "By_Sex"    : os.path.join("outputs", "2025-05-23_original_seed=9865_age-0"), 
+        #         "Undivided" : os.path.join("outputs", "2025-05-23_original_seed=9865_age-0_sex-0")
+        #     }, 
+        #     os.path.join("derivatives", "2025-05-23_original_seed=9865_compare")
+        # ), 
+        # (
+        #     "Down-sampled data and select top-50 features.", 
+        #     {
+        #         "By_Age-Sex": os.path.join("outputs", "2025-05-28_down-sampled_seed=9865"), 
+        #         "By_Age"    : os.path.join("outputs", "2025-05-28_down-sampled_seed=9865_sex-0"), 
+        #         "By_Sex"    : os.path.join("outputs", "2025-05-28_down-sampled_seed=9865_age-0"), 
+        #         "Undivided" : os.path.join("outputs", "2025-05-28_down-sampled_seed=9865_age-0_sex-0")
+        #     },
+        #     os.path.join("derivatives", "2025-05-28_down-sampled_seed=9865_compare")
+        # ), 
+        # (
+        #     "Original data and select top-50 features.", 
+        #     {
+        #         "By_Age-Sex": os.path.join("outputs", "2025-05-29_original_seed=9865"), 
+        #         "By_Age"    : os.path.join("outputs", "2025-05-29_original_seed=9865_sex-0"), 
+        #         "By_Sex"    : os.path.join("outputs", "2025-05-29_original_seed=9865_age-0"), 
+        #         "Undivided" : os.path.join("outputs", "2025-05-29_original_seed=9865_age-0_sex-0")
+        #     }, 
+        #     os.path.join("derivatives", "2025-05-29_original_seed=9865_compare")
+        # ), 
+        # (
+        #     "Down-sampled data and select features with PCA.", 
+        #     {
+        #         "By_Age-Sex": os.path.join("outputs", "2025-06-02_down-sampled_seed=9865"), 
+        #         "By_Age"    : os.path.join("outputs", "2025-06-02_down-sampled_seed=9865_sex-0"), 
+        #         "By_Sex"    : os.path.join("outputs", "2025-06-02_down-sampled_seed=9865_age-0"), 
+        #         "Undivided" : os.path.join("outputs", "2025-06-02_down-sampled_seed=9865_age-0_sex-0")
+        #     },
+        #     os.path.join("derivatives", "2025-06-02_down-sampled_seed=9865_compare")
+        # )
     ][int(sys.argv[1])]
     version_list = list(input_folders.keys())
     print(f"\n# Version comparison: {note}")
@@ -248,16 +259,21 @@ if __name__ == "__main__":
                     f"Type == '{ori_name}' & Version == '{ver_2}'"
                 )[pad_col]
 
-                ## Levene's test for homogeneity of variance:
-                levene_stats, levene_p = stats.levene(V1_abs, V2_abs)                
-                if levene_p < 0.05:
-                    equal_var = False
-                else:
-                    equal_var = True
+                # ## Levene's test for homogeneity of variance:
+                # levene_stats, levene_p = stats.levene(V1_abs, V2_abs)                
+                # if levene_p < 0.05:
+                #     equal_var = False
+                # else:
+                #     equal_var = True
 
-                ## Independent sample t-test:
-                ttest_results = stats.ttest_ind(
-                    V1_abs, V2_abs, equal_var=equal_var, alternative="two-sided"
+                # ## Independent sample t-test:
+                # ttest_results = stats.ttest_ind(
+                #     V1_abs, V2_abs, equal_var=equal_var, alternative="two-sided"
+                # )
+
+                ## Paired sample t-test:
+                ttest_results = stats.ttest_rel(
+                    V1_abs, V2_abs, alternative="two-sided"
                 )
                 t_stat = ttest_results.statistic
                 p_value = ttest_results.pvalue
@@ -283,9 +299,9 @@ if __name__ == "__main__":
                         "V2_mean": V2_abs.mean(), 
                         "V1_std": V1_abs.std(),
                         "V2_std": V2_abs.std(), 
-                        "Levene_stat": levene_stats,
-                        "Levene_p": levene_p, 
-                        "Equal_var": str(equal_var)[:1], 
+                        # "Levene_stat": levene_stats,
+                        # "Levene_p": levene_p, 
+                        # "Equal_var": str(equal_var)[:1], 
                         "DF": df, 
                         "T_stat": t_stat, 
                         "P_value": p_value, 

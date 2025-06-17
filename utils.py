@@ -1,6 +1,40 @@
 #!/usr/bin/python
 
-def standardized_feature_list():
+def basic_Q_features(): # from questionnaires
+    return [
+        "BASIC_Q_EHI_Sum", 
+        "BASIC_Q_SF36_PhysicalFunct", 
+        "BASIC_Q_SF36_PhysicalLimit", 
+        "BASIC_Q_SF36_EmotionalWell", 
+        "BASIC_Q_SF36_EmotionalLimit", 
+        "BASIC_Q_SF36_Energy", 
+        "BASIC_Q_SF36_SocialFunc", 
+        "BASIC_Q_SF36_Pain", 
+        "BASIC_Q_SF36_GeneralHealth", 
+        "BASIC_Q_SF36_Physical", 
+        "BASIC_Q_SF36_Mental", 
+        "BASIC_Q_PSQI_SleepQuality", 
+        "BASIC_Q_PSQI_SleepLatency", 
+        "BASIC_Q_PSQI_SleepDuration", 
+        "BASIC_Q_PSQI_SleepEfficiency", 
+        "BASIC_Q_PSQI_SleepDisturbance", 
+        "BASIC_Q_PSQI_SleepMedication", 
+        "BASIC_Q_PSQI_DaytimeDysfunc", 
+        "BASIC_Q_PSQI_Sum", 
+        "BASIC_Q_IPAQ_MET", 
+        "BASIC_Q_BFI_Extraversion", 
+        "BASIC_Q_BFI_Agreeableness", 
+        "BASIC_Q_BFI_Conscientiousness", 
+        "BASIC_Q_BFI_EmotionalStability", 
+        "BASIC_Q_BFI_Intellect", 
+        "BASIC_Q_MSPSS_Sum", 
+        "BASIC_Q_CogFailure_Sum", 
+        "BASIC_Q_Beck_Anxiety", 
+        "BASIC_Q_Beck_Depression", 
+        "BASIC_Q_MOCA_SUM"
+    ]
+
+def ST_features(): # from standardized tests
     return [
         "LANGUAGE_ST_SCALED_SIMILARITY", 
         "LANGUAGE_ST_SCALED_VOCABULARY", 
