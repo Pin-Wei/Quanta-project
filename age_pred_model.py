@@ -3,30 +3,39 @@
 import os
 import argparse
 import logging
-import shutil
 import copy
-import numpy as np
-import pandas as pd
+import shutil
+import json
+import pickle
 from datetime import datetime
 from itertools import product
-from sklearn.impute import SimpleImputer
+# from collections import defaultdict
+
+import numpy as np
+import pandas as pd
+import shap # SHapley Additive exPlanations
+import optuna
+import optunahub
+# from scipy.cluster import hierarchy
+# from scipy.spatial.distance import squareform
+
 from imblearn.over_sampling import SMOTENC 
 from imblearn.under_sampling import RandomUnderSampler
+
+from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import MinMaxScaler
-from sklearn.model_selection import KFold, train_test_split, cross_val_score
-from sklearn.pipeline import Pipeline
-from sklearn.feature_selection import RFECV, SelectFromModel
+# from sklearn.decomposition import PCA
+# from sklearn.feature_selection import RFECV, SelectFromModel
 from sklearn.inspection import permutation_importance
-import optuna
-from sklearn.decomposition import PCA
+from sklearn.model_selection import KFold, train_test_split, cross_val_score
+from sklearn.metrics import mean_absolute_error
+from sklearn.pipeline import Pipeline
 from sklearn.linear_model import LassoCV, ElasticNetCV, ElasticNet, LinearRegression
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.tree import DecisionTreeRegressor
+
 from lightgbm import LGBMRegressor
 from xgboost import XGBRegressor
-from sklearn.metrics import mean_absolute_error
-import pickle
-import json
 
 ## Argument parser: ===================================================================
 
@@ -60,7 +69,7 @@ parser.add_argument("-oam", "--only_all_mapping", action="store_true", default=F
 parser.add_argument("-psf", "--preselected_feature_folder", type=str, default=None, 
                     help="The folder where the result files (.json) containing the selected features are stored.")
 parser.add_argument("-fsm", "--feature_selection_method", type=int, default=0, 
-                    help="The method to select features (0: Auto, 1: LassoCV, 2: ElasticNetCV, 3: RandomForest).")
+                    help="The method to select features.")
 parser.add_argument("--max_features", type=int, default=None, 
                     help="The maximum number of features to be selected.")
 # parser.add_argument("--no_pca", action="store_true", default=False, 
@@ -92,7 +101,7 @@ class Config:
         self.age_method = ["no_cut", "cut_at_40", "cut_44-45", "wais_8_seg"][args.age_method]
         self.by_gender = [False, True][args.by_gender]
         self.testset_ratio = args.testset_ratio
-        self.feature_selection_method = [None, "LassoCV", "ElasticNetCV", "RF-Permute"][args.feature_selection_method]
+        self.feature_selection_method = [None, "LassoCV", "ElasticNetCV", "RF-Permute", "LGBM-SHAP"][args.feature_selection_method]
         self.age_correction_method = ["Zhang et al. (2023)", "Beheshti et al. (2019)"][args.age_correction_method]
         self.age_correction_groups = ["wais_8_seg", "every_5_yrs"][0]
 
@@ -135,6 +144,7 @@ class Config:
         self.failure_record_outpath = os.path.join(self.out_folder, "failure_record.txt")
         self.scaler_outpath_format = os.path.join(self.out_folder, "scaler_{}.pkl")
         self.model_outpath_format = os.path.join(self.out_folder, "models_{}_{}_{}.pkl")
+        self.features_outpath_format = os.path.join(self.out_folder, "features_{}_{}_{}.csv")
         self.training_results_outpath_format = os.path.join(self.out_folder, "training_results_{}_{}.json")
         self.results_outpath_format = os.path.join(self.out_folder, "results_{}_{}.json")
 
@@ -216,46 +226,101 @@ class Constants:
         }
         ## The number of features to select (if not using PCA):
         self.feature_num = 50
+        ## Number of parallel threads to use:
+        self.n_jobs = 16
 
 class FeatureSelector:
-    def __init__(self, method, seed, max_features):
+    def __init__(self, method, thresh_method, seed, 
+                 threshold=1e-5, max_features=None, explained_ratio=.9, n_jobs=16):
         self.method = method
         self.seed = seed
+        self.thresh_method = thresh_method
+        self.threshold = threshold
         self.max_features = max_features
-        self.n_jobs = 10
+        self.explained_ratio = explained_ratio
+        self.n_jobs = n_jobs
 
     def fit(self, X: pd.DataFrame, y):
         '''
         Select features based on their importance weights.
-        Importance can be estimated using LassoCV, ElasticNetCV, or RF-Permute.
+        - see: https://scikit-learn.org/stable/modules/feature_selection.html
+        - also: https://hyades910739.medium.com/%E6%B7%BA%E8%AB%87-tree-model-%E7%9A%84-feature-importance-3de73420e3f2
 
-        # see: https://scikit-learn.org/stable/modules/feature_selection.html
-        # await: SHapley Additive exPlanations
+        Permutation importance: https://scikit-learn.org/stable/modules/permutation_importance.html
+         + handling multicollinearity: https://scikit-learn.org/stable/auto_examples/inspection/plot_permutation_importance_multicollinear.html#sphx-glr-auto-examples-inspection-plot-permutation-importance-multicollinear-py
+         - may not be suitable
+
+        SHAP (SHapley Additive exPlanations): https://shap.readthedocs.io/en/latest/
+        - see 1: https://medium.com/analytics-vidhya/shap-part-1-an-introduction-to-shap-58aa087a460c
+        - see 2: https://ithelp.ithome.com.tw/articles/10329606
+        - see 3: https://medium.com/@msvs.akhilsharma/unlocking-the-power-of-shap-analysis-a-comprehensive-guide-to-feature-selection-f05d33698f77
         '''
         if self.method == "LassoCV":
-            importances = LassoCV(cv=5, random_state=self.seed).fit(X, y).coef_
-            threshold = 1e-5
+            importances = LassoCV(
+                cv=5, random_state=self.seed
+            ).fit(X, y).coef_
 
         elif self.method == "ElasticNetCV":
-            importances = ElasticNetCV(l1_ratio=[1, .5, .7, .9, .95, .99, 1], cv=5, random_state=self.seed, n_jobs=self.n_jobs).fit(X, y).coef_
-            threshold = 1e-5
+            importances = ElasticNetCV(
+                l1_ratio=[.1, .5, .7, .9, .95, .99, 1], 
+                cv=5, random_state=self.seed, n_jobs=self.n_jobs
+            ).fit(X, y).coef_
 
-        elif self.method == "RF-Permute": # permutation importance
-            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=.3, random_state=self.seed)
+        elif self.method == "RF-Permute": # permutation importance 
+            # dist_matrix = 1 - X.corr(method="spearman").abs()
+            # dist_linkage = hierarchy.ward( # compute Ward’s linkage on a condensed distance matrix.
+            #     squareform(dist_matrix)
+            # ) 
+            # cluster_ids = hierarchy.fcluster( # form flat clusters from the hierarchical clustering defined by the given linkage matrix
+            #     Z=dist_linkage, t=2, criterion="distance" # t: distance threshold, manually selected
+            # )
+            # cid_to_fids = defaultdict(list) # cluster id to feature ids
+            # for idx, cluster_id in enumerate(cluster_ids):
+            #     cid_to_fids[cluster_id].append(idx)
+            # first_features = [ v[0] for v in cid_to_fids.values() ] # select the first feature in each cluster
+            X_train, X_test, y_train, y_test = train_test_split(
+                # X.iloc[:, first_features], y, test_size=.3, random_state=self.seed
+                X, y, test_size=.3, random_state=self.seed
+            )
+            rf_trained = RandomForestRegressor(
+                random_state=self.seed, n_jobs=self.n_jobs
+            ).fit(X_train, y_train)
             importances = permutation_importance(
-                estimator=RandomForestRegressor(random_state=self.seed).fit(X_train, y_train), 
-                X=X_test, y=y_test, n_repeats=10, random_state=self.seed, n_jobs=self.n_jobs
+                estimator=rf_trained, X=X_test, y=y_test, 
+                n_repeats=10, random_state=self.seed, n_jobs=self.n_jobs
             ).importances_mean
-            threshold = importances.quantile(0.5)
 
-        feature_importances = pd.Series(importances, index=X.columns)
-        feature_importances = feature_importances[feature_importances.abs() > threshold].sort_values(ascending=False)
+        # elif self.method == "LightGBM": # impurity-based feature importance
+        #     importances = LGBMRegressor(
+        #         importance_type=["split", "gain"][1], random_state=self.seed
+        #     ).fit(X, y).feature_importances_
+
+        elif self.method == "LGBM-SHAP": 
+            X_train, X_test, y_train, y_test = train_test_split(
+                X, y, test_size=.3, random_state=self.seed
+            )
+            lgbm_trained = LGBMRegressor(
+                min_child_samples=5, random_state=self.seed, n_jobs=self.n_jobs
+            ).fit(X_train, y_train)
+            shap_values = shap.GPUTreeExplainer(lgbm_trained).shap_values(X_test)
+            importances = np.abs(shap_values).mean(axis=0)
+
+        feature_importances = pd.Series(importances, index=X.columns).sort_values(ascending=False)
+        
+        if self.thresh_method == "explained_ratio":
+            normed_feature_imp = feature_importances / feature_importances.abs().sum()
+            cumulative_importances = normed_feature_imp.abs().cumsum()
+            num_features = np.argmax(cumulative_importances > self.explained_ratio) + 1
+            selected_feature_imp = feature_importances.head(num_features)
+
+        elif self.thresh_method == "threshold":
+            selected_feature_imp = feature_importances[feature_importances.abs() > self.threshold]
 
         if self.max_features is not None:
-            feature_importances = feature_importances.head(self.max_features)
-
-        self.feature_importances = feature_importances
-        self.selected_features = list(feature_importances.index)
+            selected_feature_imp = selected_feature_imp.head(self.max_features)
+           
+        self.feature_importances = selected_feature_imp
+        self.selected_features = list(selected_feature_imp.index)
 
         return self
     
@@ -454,18 +519,23 @@ def preprocess_grouped_dataset(X, y, ids, testset_ratio, trained_scaler, seed):
     }
 
 def build_pipline(trial: optuna.trial.Trial, 
-                  fs_method, max_features, model_name, seed):
+                  fs_method, max_features, model_name, seed, n_jobs=16):
     '''
     Return:
     - (sklearn.pipeline.Pipeline): A pipeline of feature selection and regression model.
     # see: https://scikit-learn.org/stable/modules/generated/sklearn.pipeline.Pipeline.html
     '''
     ## Feature selection:
-    if fs_method is None:
-        fs_method = trial.suggest_categorical("fs_method", ["LassoCV", "ElasticNetCV", "RF-Permute"])
-    
     selector = FeatureSelector(
-        method=fs_method, seed=seed, max_features=max_features
+        method=trial.suggest_categorical("method", [
+            "LassoCV", "ElasticNetCV", "RF-Permute", "LGBM-SHAP"
+        ]) if fs_method is None else fs_method, 
+        thresh_method=["threshold", "explained_ratio"][1], 
+        threshold=trial.suggest_float('threshold', 1e-5, 0.001),
+        max_features=max_features, 
+        # explained_ratio=trial.suggest_float('explained_ratio', 0.9, 1),
+        seed=seed, 
+        n_jobs=n_jobs
     )
     
     ## Regression model:
@@ -473,31 +543,22 @@ def build_pipline(trial: optuna.trial.Trial,
         model = ElasticNet(
             alpha=trial.suggest_float('alpha', 1e-5, 1, log=True), 
             l1_ratio=trial.suggest_float('l1_ratio', 0, 1), 
-            random_state=seed
-        )
-    elif model_name == "RF": 
-        model = RandomForestRegressor(
-            n_estimators=trial.suggest_int('n_estimators', 10, 200), 
-            max_depth=trial.suggest_int('max_depth', 2, 32), 
-            random_state=seed
+            random_state=seed, 
+            n_jobs=n_jobs
         )
     elif model_name == "CART": 
         model = DecisionTreeRegressor(
             max_depth=trial.suggest_int('max_depth', 2, 32), 
             min_samples_split=trial.suggest_int('min_samples_split', 2, 20), 
-            random_state=seed
+            random_state=seed, 
+            n_jobs=n_jobs
         )
-    elif model_name == "LGBM": 
-        model = LGBMRegressor(
-            objective='regression',
-            metric='mae',
-            num_leaves=trial.suggest_int('num_leaves', 2, 256),
-            learning_rate=trial.suggest_float('learning_rate', 1e-4, 1.0, log=True),
-            feature_fraction=trial.suggest_float('feature_fraction', 0.1, 1.0),
-            bagging_fraction=trial.suggest_float('bagging_fraction', 0.1, 1.0),
-            bagging_freq=trial.suggest_int('bagging_freq', 1, 7),
-            min_child_samples=trial.suggest_int('min_child_samples', 5, 100),
-            random_state=seed
+    elif model_name == "RF": 
+        model = RandomForestRegressor(
+            n_estimators=trial.suggest_int('n_estimators', 10, 200), 
+            max_depth=trial.suggest_int('max_depth', 2, 32), 
+            random_state=seed, 
+            n_jobs=n_jobs
         )
     elif model_name == "XGBM": 
         model = XGBRegressor(
@@ -508,7 +569,20 @@ def build_pipline(trial: optuna.trial.Trial,
             subsample=trial.suggest_float('subsample', 0.1, 1.0),
             colsample_bytree=trial.suggest_float('colsample_bytree', 0.1, 1.0),
             # tree_method='hist', # If GPU is not available
-            random_state=seed
+            random_state=seed, 
+            n_jobs=n_jobs
+        )
+    elif model_name == "LGBM": 
+        model = LGBMRegressor(
+            metric='mae',
+            num_leaves=trial.suggest_int('num_leaves', 2, 256),
+            learning_rate=trial.suggest_float('learning_rate', 1e-4, 1.0, log=True),
+            feature_fraction=trial.suggest_float('feature_fraction', 0.1, 1.0),
+            bagging_fraction=trial.suggest_float('bagging_fraction', 0.1, 1.0),
+            bagging_freq=trial.suggest_int('bagging_freq', 1, 7),
+            min_child_samples=trial.suggest_int('min_child_samples', 5, 100),
+            random_state=seed, 
+            n_jobs=n_jobs
         )
 
     return Pipeline([
@@ -517,13 +591,13 @@ def build_pipline(trial: optuna.trial.Trial,
     ])
 
 def optimize_objective(trial: optuna.trial.Trial, 
-                       X, y, fs_method, max_features, model_name, seed, n_jobs=10): 
+                       X, y, fs_method, max_features, model_name, seed, n_jobs=16): 
     '''
     Return:
     - (float): Average mean absolute error (MAE) score across cross validation.
     '''
     pipeline = build_pipline(
-        trial, fs_method, max_features, model_name, seed
+        trial, fs_method, max_features, model_name, seed, n_jobs
     )
 
     neg_mae_scores = cross_val_score(
@@ -536,7 +610,7 @@ def optimize_objective(trial: optuna.trial.Trial,
 
     return -1 * np.mean(neg_mae_scores)
 
-def train_and_evaluate(X, y, fs_method, max_features, model_names, seed, optimize_trials=50):
+def train_and_evaluate(X, y, fs_method, max_features, model_names, seed, n_jobs=16):
     '''
     Inputs:
     - X (pd.DataFrame)  : Feature matrix.
@@ -554,20 +628,20 @@ def train_and_evaluate(X, y, fs_method, max_features, model_names, seed, optimiz
         ## Initialize the model with the best hyperparameters:
         study = optuna.create_study(
             direction='minimize', 
-            sampler=optuna.samplers.TPESampler(seed=seed), 
-            # sampler=optuna.load_module("samplers/auto_sampler").AutoSampler() 
-            # Automatically selects an algorithm internally, see: https://medium.com/optuna/autosampler-automatic-selection-of-optimization-algorithms-in-optuna-1443875fd8f9
+            # sampler=optuna.samplers.TPESampler(seed=seed), 
+            sampler=optunahub.load_module("samplers/auto_sampler").AutoSampler() 
+                ## automatically selects an algorithm internally, see: https://medium.com/optuna/autosampler-automatic-selection-of-optimization-algorithms-in-optuna-1443875fd8f9
         )
         study.optimize(
-            lambda trial: optimize_objective(trial, X, y, fs_method, max_features, model_name, seed),
-            n_trials=optimize_trials, 
+            lambda trial: optimize_objective(trial, X, y, fs_method, max_features, model_name, seed, n_jobs),
+            n_trials=50, # number of hyperparameter combinations to try
             show_progress_bar=True
         )
         logging.info("Parameter optimization is completed :-)")
 
         ## The best feature selector and model with the best hyperparameters:
         best_trial = FrozenTrialAdapter(study.best_params)
-        best_pipeline, _ = build_pipline(
+        best_pipeline = build_pipline(
             best_trial, fs_method, max_features, model_name, seed
         )
 
@@ -588,11 +662,13 @@ def train_and_evaluate(X, y, fs_method, max_features, model_names, seed, optimiz
 
         ## Storing results:
         results[model_name] = {
-            "best_feature_select_method": selector.method, 
+            "fs_method": selector.method, 
+            "fs_thresh_method": selector.thresh_method, 
+            "fs_threshold": selector.threshold, 
             "selected_features": selector.selected_features, 
             "feature_importances": selector.feature_importances, 
-            "best_model": best_pipeline.named_steps["regressor"],  
-            "best_params": study.best_params, 
+            "trained_model": best_pipeline.named_steps["regressor"],  
+            "model_params": study.best_params, 
             "mae_mean": np.mean(mae_scores), 
             "mae_std": np.std(mae_scores),
             "cv_scores": mae_scores
@@ -676,6 +752,8 @@ def convert_np_types(obj):
         return obj.tolist() # Convert np.ndarray to list
     elif isinstance(obj, np.generic): 
         return obj.item()   # Convert np.generic to scalar
+    elif isinstance(obj, pd.Series):
+        return obj.tolist() # Convert pd.Series to list
     elif isinstance(obj, list):
         return [ convert_np_types(i) for i in obj ] 
     elif isinstance(obj, dict):
@@ -701,7 +779,7 @@ def main():
 
     ## Define the random seed:
     if args.seed is None:
-        seed = np.random.randint(0, 10000)
+        seed = 9865 # np.random.randint(0, 10000)
     else:
         seed = args.seed
 
@@ -933,7 +1011,7 @@ def main():
 
                         saved_model = os.path.join("outputs", args.pretrained_model_folder, f"models_{group_name}_{ori_name}_{best_model_name}.pkl")
                         with open(saved_model, 'rb') as f:
-                            best_model = pickle.load(f)
+                            trained_model = pickle.load(f)
                         
                         X_train_selected = data_dict["X_train"].loc[:, selected_features]
 
@@ -978,48 +1056,60 @@ def main():
                                     fs_method=config.feature_selection_method, 
                                     max_features=args.max_features, 
                                     model_names=included_models, 
-                                    seed=seed
+                                    seed=seed, 
+                                    n_jobs=constant.n_jobs
                                 ) 
                                 best_model_name = min(
                                     results, key=lambda x: results[x]["mae_mean"]
                                 )
-                                best_model = results[best_model_name]["best_model"]
-                                selected_features = results[best_model_name]["selected_features"]
-                                # mean_train_mae = results[best_model_name]["mae_mean"]
 
-                                logging.info("Saving the best model to the main output folder ...")
+                                trained_model = results[best_model_name]["trained_model"]
+                                logging.info("Saving the best-performing model (.pkl) ...")
                                 model_outpath = config.model_outpath_format.format(group_name, ori_name, best_model_name)
                                 with open(model_outpath, 'wb') as f:
-                                    pickle.dump(best_model, f)
+                                    pickle.dump(trained_model, f)
+
+                                selected_features = results[best_model_name]["selected_features"]
+                                logging.info("Saving the best selected features and their importances ...")
+                                features_outpath = config.features_outpath_format.format(group_name, ori_name, results[best_model_name]["fs_method"])
+                                results[best_model_name]["feature_importances"].to_csv(
+                                    features_outpath, header=False
+                                )
 
                                 logging.info("Saving other models to the 'other models' folder ...")
+                                embedded_outpath = os.path.join(config.out_folder, "other models")
+                                os.makedirs(embedded_outpath, exist_ok=True)
                                 for model_name, model_result in results.items():
                                     if model_name != best_model_name: 
-                                        fp, fn = os.path.split(config.model_outpath_format.format(group_name, ori_name, model_name))
-                                        os.makedirs(os.path.join(fp, "other models"), exist_ok=True)
-                                        model_outpath = os.path.join(fp, "other models", fn)
+                                        model_outpath = os.path.join(embedded_outpath, os.path.basename(config.model_outpath_format.format(group_name, ori_name, model_name)))
                                         with open(model_outpath, 'wb') as f:
-                                            pickle.dump(model_result["best_model"], f)
+                                            pickle.dump(model_result["trained_model"], f)
+                                        # features_outpath = os.path.join(embedded_outpath, os.path.basename(config.features_outpath_format.format(group_name, ori_name, model_result["fs_method"]).replace(".csv", f"_{model_name}.csv")))
+                                        # model_result["feature_importances"].to_csv(
+                                        #     features_outpath, header=False
+                                        # )
 
-                                logging.info("Saving results for all models ...")   
-                                model_maes = {
+                                logging.info("Saving results for all models ...")
+                                model_results = {
                                     model_name: {
-                                        "fs_method": res["best_feature_select_method"], 
+                                        "fs_method": res["fs_method"], 
                                         "selected_features": res["selected_features"], 
                                         "feature_importances": res["feature_importances"], 
-                                        "reg_params": res["best_params"], 
+                                        "fs_threshold": res["fs_threshold"], 
+                                        "model_params": res["model_params"], 
                                         "mae_scores": res["cv_scores"],
                                         "mae_mean": res["mae_mean"], 
                                         "mae_std": res["mae_std"]
                                     } for model_name, res in results.items()
                                 }
-                                model_maes_outpath = config.training_results_outpath_format.format(group_name, ori_name)
-                                with open(model_maes_outpath, 'w') as f:
-                                    json.dump(model_maes, f)
+                                model_results = convert_np_types(model_results)
+                                model_results_outpath = config.training_results_outpath_format.format(group_name, ori_name)
+                                with open(model_results_outpath, 'w') as f:
+                                    json.dump(model_results, f)
                             
                     logging.info("Applying the best model to the training set ...")
                     X_train_selected = data_dict["X_train"].loc[:, selected_features]
-                    y_pred_train = best_model.predict(X_train_selected)
+                    y_pred_train = trained_model.predict(X_train_selected)
                     pad_train = y_pred_train - data_dict["y_train"]
 
                     if config.age_correction_method == "Zhang et al. (2023)":
@@ -1071,13 +1161,13 @@ def main():
                             "CorrectedPredictedAge": list(corrected_y_pred_train), 
                             "AgeCorrectionTable": correction_ref.to_dict(orient='records') if type(correction_ref) is not dict else correction_ref, 
                             "NumberOfFeatures": len(selected_features), 
-                            "FeatureNames": selected_features, 
+                            "FeatureNames": list(selected_features), 
                         }
 
                     else:
                         logging.info("Evaluating the best model on the testing set ...")
                         X_test_selected = data_dict["X_test"].loc[:, selected_features]                       
-                        y_pred_test = best_model.predict(X_test_selected)
+                        y_pred_test = trained_model.predict(X_test_selected)
                         y_pred_test = pd.Series(y_pred_test, index=data_dict["y_test"].index)
                         pad = y_pred_test - data_dict["y_test"]
 
@@ -1124,7 +1214,7 @@ def main():
                             "CorrectedPredictedAge": list(corrected_y_pred_test), 
                             "AgeCorrectionTable": correction_ref.to_dict(orient='records') if type(correction_ref) is not dict else correction_ref, 
                             "NumberOfFeatures": len(selected_features), 
-                            "FeatureNames": selected_features, 
+                            "FeatureNames": list(selected_features), 
                         }
 
                     save_results = convert_np_types(save_results)
@@ -1139,9 +1229,10 @@ def main():
     with open(config.failure_record_outpath, 'w') as f:
         f.write("\n".join(record_if_failed))
     
-    logging.info("The record of failed processing is saved.")
+    logging.info("The record of failed processing is saved.")    
 
 if __name__ == "__main__":
     main()
+    print(f"\nFinished at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
 
 
