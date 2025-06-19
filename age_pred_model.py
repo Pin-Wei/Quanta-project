@@ -304,7 +304,7 @@ class FeatureSelector:
             lgbm_trained = LGBMRegressor(
                 min_child_samples=5, random_state=self.seed, n_jobs=self.n_jobs
             ).fit(X_train, y_train)
-            shap_values = shap.GPUTreeExplainer(lgbm_trained).shap_values(X_test)
+            shap_values = shap.TreeExplainer(lgbm_trained).shap_values(X_test)
             importances = np.abs(shap_values).mean(axis=0)
 
         feature_importances = pd.Series(importances, index=X.columns).sort_values(ascending=False)
