@@ -68,7 +68,7 @@ parser.add_argument("-oam", "--only_all_mapping", action="store_true", default=F
                     help="Include only 'All' domain-approach mappings for feature selection.")
 parser.add_argument("-psf", "--preselected_feature_folder", type=str, default=None, 
                     help="The folder where the result files (.json) containing the selected features are stored.")
-parser.add_argument("-fsm", "--feature_selection_method", type=int, default=0, 
+parser.add_argument("-fsm", "--feature_selection_method", type=int, default=2, 
                     help="The method to select features.")
 parser.add_argument("-fst", "--fs_thresh_method", type=int, default=1, 
                     help="The method to determine the threshold for feature selection (0: 'threshold', 1: 'explained_ratio').")
@@ -103,7 +103,7 @@ class Config:
         self.age_method = ["no_cut", "cut_at_40", "cut_44-45", "wais_8_seg"][args.age_method]
         self.by_gender = [False, True][args.by_gender]
         self.testset_ratio = args.testset_ratio
-        self.feature_selection_method = [None, "LassoCV", "ElasticNetCV", "RF-Permute", "LGBM-SHAP"][args.feature_selection_method]
+        self.feature_selection_method = [None, "LassoCV", "ElasticNetCV", "RF-Permute", "ElaNet-SHAP", "RF-SHAP", "LGBM-SHAP"][args.feature_selection_method]
         self.fs_thresh_method = ["ftxed_threshold", "explained_ratio"][args.fs_thresh_method]
         self.age_correction_method = ["Zhang et al. (2023)", "Beheshti et al. (2019)"][args.age_correction_method]
         self.age_correction_groups = ["wais_8_seg", "every_5_yrs"][0]
@@ -297,14 +297,34 @@ class FeatureSelector:
             # ).fit(X, y).feature_importances_
             raise NotImplementedError("LightGBM impurity-based feature importance should not be used.")
 
-        elif self.method == "LGBM-SHAP": 
-            X_train, X_test, y_train, y_test = train_test_split(
-                X, y, test_size=.2, random_state=self.seed
-            )
-            lgbm_trained = LGBMRegressor(
-                min_child_samples=5, random_state=self.seed, n_jobs=self.n_jobs
-            ).fit(X_train, y_train)
-            shap_values = shap.TreeExplainer(lgbm_trained).shap_values(X_test)
+        elif self.method.endswith("SHAP"): 
+            if self.method.startswith("ElaNet"): # ElasticNet-SHAP
+                shap_values = shap.KernelExplainer(
+                    ElasticNetCV(
+                        l1_ratio=[.1, .5, .7, .9, .95, .99, 1], 
+                        cv=5, random_state=self.seed, n_jobs=self.n_jobs
+                    ).fit(X, y)
+                ).shap_values(X)
+            else:
+                X_train, X_test, y_train, y_test = train_test_split(
+                    X, y, test_size=.2, random_state=self.seed
+                )
+
+                if self.method.startswith("RF"): # RF-SHAP
+                    shap_values = shap.TreeExplainer(
+                        RandomForestRegressor(
+                            random_state=self.seed, n_jobs=self.n_jobs
+                        ).fit(X_train, y_train)
+                    ).shap_values(X_test)
+
+                elif self.method.startswith("LGBM"): # LGBM-SHAP
+                    shap_values = shap.TreeExplainer(
+                        LGBMRegressor(
+                            max_depth=3, min_child_samples=5, 
+                            random_state=self.seed, n_jobs=self.n_jobs
+                        ).fit(X_train, y_train)
+                    ).shap_values(X_test)
+
             importances = np.abs(shap_values).mean(axis=0)
 
         feature_importances = pd.Series(importances, index=X.columns).sort_values(ascending=False)
@@ -515,11 +535,11 @@ def build_pipline(params, model_name, seed, n_jobs=16):
     '''
     ## Feature selection:
     selector = FeatureSelector(
-        method=params["method"], 
-        thresh_method=params["thresh_method"], 
-        threshold=params["threshold"], 
-        explained_ratio=params["explained_ratio"],
-        max_feature_num=params["max_feature_num"], 
+        method=params["fs_method"], 
+        thresh_method=params["fs_thresh_method"], 
+        threshold=params["fs_threshold"], 
+        explained_ratio=params["fs_explained_ratio"],
+        max_feature_num=params["fs_max_feature_num"], 
         seed=seed, 
         n_jobs=n_jobs
     )
@@ -577,42 +597,41 @@ def build_pipline(params, model_name, seed, n_jobs=16):
         ("regressor", model)
     ])
 
-def optimize_objective(trial, X, y, fs_method, thresh_method, max_feature_num, model_name, seed, n_jobs=16): 
+def optimize_objective(trial, X, y, default_fs_params, model_name, seed, n_jobs=16): 
     '''
     Return:
     - (float): Average mean absolute error (MAE) score across cross validation.
     '''
     ## Set up feature selection parameters:
-    if fs_method is None:
-        params = {
-            "method": trial.suggest_categorical("fs_method", ["LassoCV", "ElasticNetCV", "RF-Permute", "LGBM-SHAP"]), 
-            "thresh_method": thresh_method, 
-            "max_feature_num": max_feature_num
-        }
+    for k, v in default_fs_params.items():
+        trial.set_user_attr(k, v)
+
+    if default_fs_params["fs_method"] is None:
+        # params = {
+        #     "fs_method": trial.suggest_categorical("fs_method", ["LassoCV", "ElasticNetCV", "RF-Permute", "ElaNet-SHAP", "RF-SHAP", "LGBM-SHAP"]), 
+        #     "fs_thresh_method": trial.user_attrs["fs_thresh_method"], 
+        #     "fs_max_feature_num": trial.user_attrs["fs_max_feature_num"]
+        # }
+        raise NotImplementedError("Currently, unspecified feature selection method is not supported.")
     else:
         params = {
-            "method": fs_method, 
-            "thresh_method": thresh_method, 
-            "max_feature_num": max_feature_num
+            "fs_method": trial.user_attrs["fs_method"], 
+            "fs_thresh_method": trial.user_attrs["fs_thresh_method"], 
+            "fs_max_feature_num": trial.user_attrs["fs_max_feature_num"]
         }
 
-    if params["thresh_method"] == "ftxed_threshold":
+    if params["fs_thresh_method"] == "ftxed_threshold":
         params.update({
-            "threshold": trial.suggest_float("threshold", 1e-5, 0.001), 
-            "explained_ratio": None
+            "fs_threshold": trial.suggest_float("fs_threshold", 1e-5, 0.001), 
+            "fs_explained_ratio": trial.user_attrs["fs_explained_ratio"]
         })
 
-    elif params["thresh_method"] == "explained_ratio":
+    elif params["fs_thresh_method"] == "explained_ratio":
         params.update({
-            "explained_ratio": trial.suggest_float('explained_ratio', 0.9, 1), 
-            "threshold": None
+            "fs_explained_ratio": trial.suggest_float("fs_explained_ratio", 0.9, 1), 
+            "fs_threshold": trial.user_attrs["fs_threshold"]
         })
 
-    ## Record feature selection parameters:
-    for k, v in params.items():
-        if v is not None:
-            trial.set_user_attr(f"fs_{k}", v)
-    
     ## Set up model parameters:
     if model_name == "ElasticNet":
         params.update({
@@ -687,25 +706,40 @@ def train_and_evaluate(X, y, fs_method, thresh_method, max_feature_num, model_na
             sampler=optunahub.load_module("samplers/auto_sampler").AutoSampler() 
                 ## automatically selects an algorithm internally, see: https://medium.com/optuna/autosampler-automatic-selection-of-optimization-algorithms-in-optuna-1443875fd8f9
         )
+        default_fs_params = {
+            "fs_method": fs_method, 
+            "fs_thresh_method": thresh_method, 
+            "fs_max_feature_num": max_feature_num, 
+            "fs_explained_ratio": None, 
+            "fs_threshold": None
+        }
         study.optimize(
             lambda trial: optimize_objective(
-                trial, X, y, fs_method, thresh_method, max_feature_num, model_name, seed, n_jobs
+                trial, X, y, default_fs_params, model_name, seed, n_jobs
             ),
             n_trials=50, show_progress_bar=True
         )
         logging.info("Parameter optimization is completed :-)")
 
         ## Refit the model with the best hyperparameters found:
+        logging.info("Evaluating the model with the best hyperparameters ...")
+        best_params = study.best_params
+        best_params.update({
+            k: v for k, v in default_fs_params.items() if k not in best_params.keys()
+        })
         best_pipeline = build_pipline(
-            study.best_params, model_name, seed, n_jobs
+            best_params, model_name, seed, n_jobs
         )
-        mae_scores = -1 * cross_val_score(
-            estimator=best_pipeline, X=X, y=y, 
-            cv=KFold(n_splits=5, shuffle=True, random_state=seed), 
-            scoring="neg_mean_absolute_error", 
-            n_jobs=n_jobs, 
-            verbose=1
-        )
+        kf = KFold(n_splits=5, shuffle=True, random_state=seed)
+        mae_scores = []
+        for train_index, test_index in kf.split(X):
+            X_train, X_test = X.iloc[train_index], X.iloc[test_index]
+            y_train, y_test = y.iloc[train_index], y.iloc[test_index]
+            best_pipeline.fit(X_train, y_train)
+            y_pred = best_pipeline.predict(X_test)
+            if np.isnan(y_pred).any(): 
+                raise ValueError("Model prediction contains NaN values.")
+            mae_scores.append(mean_absolute_error(y_test, y_pred))
 
         ## Storing results:
         results[model_name] = {
@@ -716,7 +750,7 @@ def train_and_evaluate(X, y, fs_method, thresh_method, max_feature_num, model_na
             "mae_mean": np.mean(mae_scores), 
             "mae_std": np.std(mae_scores)
         }
-        results[model_name] = results[model_name].update(study.best_params)
+        results[model_name].update(best_params)
 
     return results
 
