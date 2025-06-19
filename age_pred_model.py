@@ -1098,7 +1098,7 @@ def main():
                                     X=X_train_included, 
                                     y=data_dict["y_train"], 
                                     fs_method=config.feature_selection_method, 
-                                    thresh_method=config.fs_threshold_method, 
+                                    thresh_method=config.fs_thresh_method, 
                                     max_feature_num=args.max_feature_num, 
                                     model_names=included_models, 
                                     seed=seed, 
