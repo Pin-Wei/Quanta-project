@@ -1161,7 +1161,7 @@ def main():
             corrwith_cols=[ x[:3] for x in desc.feature_orientations ], 
             x_col_names=[ x[:3] for x in desc.feature_orientations ], 
             y_col_names=st_features, yr=90, 
-            output_path=os.path.join(config.output_folder, fn.replace("in", f"& standardized features in")), 
+            output_path=os.path.join(config.output_folder, fn.replace("in", f"& standardized features in").replace(".png", f" (N={len(wide_DF)}).png")), 
             figsize=(8, 6),
             overwrite=args.overwrite
         )
@@ -1171,7 +1171,7 @@ def main():
             corrwith_cols=[ x[:3] for x in desc.feature_orientations ], 
             x_col_names=[ x[:3] for x in desc.feature_orientations ], 
             y_col_names=basic_q_features, yr=90, 
-            output_path=os.path.join(config.output_folder, fn.replace("in", f"& questionnaire features in")), 
+            output_path=os.path.join(config.output_folder, fn.replace("in", f"& questionnaire features in").replace(".png", f" (N={len(wide_DF)}).png")), 
             figsize=(8, 10),
             overwrite=args.overwrite
         )

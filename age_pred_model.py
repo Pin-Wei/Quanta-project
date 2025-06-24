@@ -124,7 +124,7 @@ class Config:
         if self.feature_selection_method is not None:
             folder_prefix += f"_{self.feature_selection_method}"
         else:
-            folder_prefix += "_None"
+            folder_prefix += "_Auto"
 
         if args.age_method == 0:
             folder_prefix += "_age-0"
