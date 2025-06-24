@@ -253,7 +253,6 @@ def load_data(config, desc, const, output_path, overwrite=False):
     ## The features selected to train the model and the modeling results:
     selected_features = { o: {} for o in desc.feature_orientations }
     main_results_list, train_results_list = [], []
-    trainset_infos = []
 
     for label in desc.label_list:
         if desc.sep_sex:
@@ -294,13 +293,6 @@ def load_data(config, desc, const, output_path, overwrite=False):
                             train_results.insert(2, "Sex", sex)
                         train_results_list.append(train_results)
 
-        # if desc.traintest:            
-        #     temp_DF = pd.DataFrame({
-        #         "SID": [ x.replace("sub-0", "") for x in results["TrainingSubjID"] ]
-        #     })
-        #     temp_DF["AgeGroup"] = age_group
-        #     trainset_infos.append(temp_DF)
-
     result_DF = pd.concat(main_results_list, ignore_index=True)
     result_DF.insert(1, "SID", result_DF[desc.sid_name].map(lambda x: x.replace("sub-0", "")))
     result_DF.drop(columns=[desc.sid_name], inplace=True)
@@ -316,31 +308,18 @@ def load_data(config, desc, const, output_path, overwrite=False):
             "TrainingPADAC"     : "CorrectedPAD", 
             "TrainingCorPredAge": "CorrectedPredictedAge"
         }, inplace=True)
-
         test_results_DF = result_DF.copy(deep=True)
         test_results_DF.insert(1, "TrainTest", "Test")
         test_results_DF.drop(columns=["Model", "NumberOfFeatures"], inplace=True)
         train_results_DF.insert(1, "TrainTest", "Train")
         combined_results_DF = pd.concat([train_results_DF, test_results_DF])
-        combined_results_DF.sort_values(
-            by=["Type"] + desc.label_cols + ["TrainTest"], ascending=False
-        ).to_csv(output_path, index=False)
-
-        # trainset_info_DF = pd.concat(trainset_infos, ignore_index=True)
-        # all_subj_info_DF = (
-        #     data_DF
-        #     .loc[:, ["SID", "BASIC_INFO_AGE", "BASIC_INFO_SEX"]]
-        #     .rename(columns={
-        #         "BASIC_INFO_AGE": "Age", 
-        #         "BASIC_INFO_SEX": "Sex"
-        #     })
-        # )
-        # trainset_info_DF = trainset_info_DF.merge(all_subj_info_DF, on="SID", how='inner')
+        combined_results_DF.sort_values(by=["Type"] + desc.label_cols + ["TrainTest"], ascending=False)
     else:
         combined_results_DF = result_DF
-        result_DF.to_csv(output_path, index=False)
 
-    print(f"\nResults are saved to:\n{output_path}")
+    if not os.path.exists(output_path) or overwrite:
+        combined_results_DF.to_csv(output_path, index=False)
+        print(f"\nResults are saved to:\n{output_path}")
 
     return data_DF, selected_features, result_DF, combined_results_DF
 
@@ -629,15 +608,18 @@ def rename_cols(col_list):
     return renamed_col_list
 
 def format_r(x, y):
-    r, p = pearsonr(x, y, alternative='two-sided')
-    if p < .001:
-        return f"{r:.2f}***"
-    elif p < .01:
-        return f"{r:.2f}**"
-    elif p < .05:
-        return f"{r:.2f}*"
+    if np.std(x) == 0 or np.std(y) == 0:
+        return "N/A"
     else:
-        return f"{r:.2f}"
+        r, p = pearsonr(x, y, alternative='two-sided')
+        if p < .001:
+            return f"{r:.2f}***"
+        elif p < .01:
+            return f"{r:.2f}**"
+        elif p < .05:
+            return f"{r:.2f}*"
+        else:
+            return f"{r:.2f}"
     
 def plot_cormat(wide_sub_DF, targ_cols, corrwith_cols=None,
                 output_path=None, overwrite=False, 
@@ -681,6 +663,7 @@ def plot_cormat(wide_sub_DF, targ_cols, corrwith_cols=None,
         if x_col_names is not None: 
             ax.set_xticklabels(x_col_names, rotation=xr)
         if y_col_names is not None: 
+            ax.set_yticks(np.arange(len(y_col_names)))
             ax.set_yticklabels(y_col_names, rotation=xr)
         plt.tight_layout()
         plt.savefig(output_path)
@@ -755,8 +738,6 @@ def plot_scatter_from_corr(corr_DF, group_name, wide_sub_DF, t1, t2, grouping_co
         plt.savefig(output_path)
         plt.close()
         print(f"\nCorrelation plot is saved to:\n{output_path}")
-
-def 
 
 def make_feature_DF(ori_name, feature_list, domain_approach_mapping):
     '''
@@ -1169,44 +1150,48 @@ def main():
             overwrite=args.overwrite
         )
         
-        ## Plot correlation matrices with questionnaire/standardized features:
-        for feature_type, feature_list, fh in [
-            ("questionnaire", basic_q_features, 15), 
-            ("standardized", st_features, 8)
-        ]:
-            fn2 = fn.replace("in", f"& {feature_type} features in")
-            plot_cormat(
-                wide_sub_DF=wide_sub_DF.merge(
-                    data_DF.loc[:, ["SID"]+feature_list], 
-                    on="SID", how="left"
-                ), 
-                targ_cols=feature_list, 
-                corrwith_cols=[ x[:3] for x in desc.feature_orientations ], 
-                x_col_names=[ x[:3] for x in desc.feature_orientations ], 
-                y_col_names=feature_list, yr=90, 
-                output_path=os.path.join(config.output_folder, fn2), 
-                figsize=(fh, 6),
-                overwrite=args.overwrite
-            )
+        ## Plot correlation matrices with standardized/questionnaire features:
+        wide_DF = wide_sub_DF.merge(
+            data_DF.loc[:, ["SID"]+basic_q_features+st_features], 
+            on="SID", how="left"
+        )
+        plot_cormat( # standardized
+            wide_sub_DF=wide_DF, 
+            targ_cols=st_features, 
+            corrwith_cols=[ x[:3] for x in desc.feature_orientations ], 
+            x_col_names=[ x[:3] for x in desc.feature_orientations ], 
+            y_col_names=st_features, yr=90, 
+            output_path=os.path.join(config.output_folder, fn.replace("in", f"& standardized features in")), 
+            figsize=(8, 6),
+            overwrite=args.overwrite
+        )
+        plot_cormat( # questionnaire
+            wide_sub_DF=wide_DF, 
+            targ_cols=basic_q_features, 
+            corrwith_cols=[ x[:3] for x in desc.feature_orientations ], 
+            x_col_names=[ x[:3] for x in desc.feature_orientations ], 
+            y_col_names=basic_q_features, yr=90, 
+            output_path=os.path.join(config.output_folder, fn.replace("in", f"& questionnaire features in")), 
+            figsize=(8, 10),
+            overwrite=args.overwrite
+        )
 
     ## Plot correlation matrices with standardized features for all groups:
     wide_DF = (
         pd.concat(list(wide_sub_DF_dict.values()))
         .merge(data_DF.loc[:, ["SID"]+st_features], on="SID", how="left")
-    )     
-    fn3 = config.pad_cormat_fn_template.replace("in <GroupName>", 
-                                                f"& standardized features across all groups (N={len(wide_DF)})") 
+    )
+    # wide_DF.to_csv(os.path.join(config.output_folder, "PAD values with standardized features.csv"), index=False)
     plot_cormat(
         wide_sub_DF=wide_DF, 
         targ_cols=st_features, 
         corrwith_cols=[ x[:3] for x in desc.feature_orientations ], 
         x_col_names=[ x[:3] for x in desc.feature_orientations ], 
         y_col_names=st_features, yr=90, 
-        output_path=os.path.join(config.output_folder, fn3), 
+        output_path=os.path.join(config.output_folder, config.pad_cormat_fn_template.replace("in <GroupName>", f"& standardized features across all groups (N={len(wide_DF)})")), 
         figsize=(8, 6),
         overwrite=args.overwrite
     )
-    # wide_DF.to_csv(os.path.join(config.output_folder, "PAD values with standardized features.csv"), index=False)
 
     ## Calculate pairwise correlations (save to different sheets in an .xlsx file):
     corr_DF = calc_pairwise_corr(
@@ -1295,21 +1280,20 @@ def main():
             )
 
     ## Save the feature dataframe:
-    feature_DF_long = pd.concat(feature_DF_list)
-    feature_DF_long.rename(columns={
-        "feature"     : "Feature", 
-        "domain"      : "Level_2", 
-        "domain_num"  : "L2_num", 
-        "approach"    : "Level_1", 
-        "approach_num": "L1_num"
-    }, inplace=True)
-    feature_DF_long = feature_DF_long.loc[:, [
-        "Type", "Group", "Level_1", "L1_num", "Level_2", "L2_num" # , "Feature"
-    ]]
-    feature_DF_long.drop_duplicates(inplace=True)
-
     output_path = os.path.join(config.output_folder, config.feature_df_filename)
     if not os.path.exists(os.path.dirname(output_path)) or args.overwrite:
+        feature_DF_long = pd.concat(feature_DF_list)
+        feature_DF_long.rename(columns={
+            "feature"     : "Feature", 
+            "domain"      : "Level_2", 
+            "domain_num"  : "L2_num", 
+            "approach"    : "Level_1", 
+            "approach_num": "L1_num"
+        }, inplace=True)
+        feature_DF_long = feature_DF_long.loc[:, [
+            "Type", "Group", "Level_1", "L1_num", "Level_2", "L2_num" # , "Feature"
+        ]]
+        feature_DF_long.drop_duplicates(inplace=True)
         feature_DF_long.to_csv(output_path, index=False)
         print(f"\nFeature dataframe saved to:\n{output_path}")
 

@@ -104,7 +104,7 @@ class Config:
         self.by_gender = [False, True][args.by_gender]
         self.testset_ratio = args.testset_ratio
         self.feature_selection_method = [None, "LassoCV", "ElasticNetCV", "RF-Permute", "ElaNet-SHAP", "RF-SHAP", "LGBM-SHAP"][args.feature_selection_method]
-        self.fs_thresh_method = ["ftxed_threshold", "explained_ratio"][args.fs_thresh_method]
+        self.fs_thresh_method = ["fixed_threshold", "explained_ratio"][args.fs_thresh_method]
         self.age_correction_method = ["Zhang et al. (2023)", "Beheshti et al. (2019)"][args.age_correction_method]
         self.age_correction_groups = ["wais_8_seg", "every_5_yrs"][0]
 
@@ -121,8 +121,10 @@ class Config:
         else:
             folder_prefix += "_original"
 
-        # if args.seed is not None:
-        #     folder_prefix += f"_seed={args.seed}"
+        if self.feature_selection_method is not None:
+            folder_prefix += f"_{self.feature_selection_method}"
+        else:
+            folder_prefix += "_None"
 
         if args.age_method == 0:
             folder_prefix += "_age-0"
@@ -238,6 +240,7 @@ class FeatureSelector:
         self.threshold = threshold
         self.explained_ratio = explained_ratio
         self.max_feature_num = max_feature_num
+        self.min_feature_num = 1 # 10
         self.n_jobs = n_jobs
 
     def fit(self, X: pd.DataFrame, y):
@@ -256,6 +259,14 @@ class FeatureSelector:
         - see 3: https://medium.com/analytics-vidhya/shap-part-1-an-introduction-to-shap-58aa087a460c
         - see 4: https://medium.com/@msvs.akhilsharma/unlocking-the-power-of-shap-analysis-a-comprehensive-guide-to-feature-selection-f05d33698f77
         '''
+        ## Check input:
+        assert isinstance(X, pd.DataFrame), "X should be a pandas DataFrame."
+        assert isinstance(y, pd.Series) or isinstance(y, np.ndarray), "y should be a pandas Series or a numpy array."
+        assert X.shape[0] == y.shape[0], "X and y should have the same number of rows."
+        assert (not np.any(np.isnan(X))) and (not np.any(np.isnan(y))), "X and y should not contain NaN values."
+        assert (not np.any(np.isinf(X))) and (not np.any(np.isinf(y))), "X and y should not contain infinite values."
+
+        ## Estimate feature importance:
         if self.method == "LassoCV":
             importances = LassoCV(
                 cv=5, random_state=self.seed
@@ -298,28 +309,33 @@ class FeatureSelector:
             raise NotImplementedError("LightGBM impurity-based feature importance should not be used.")
 
         elif self.method.endswith("SHAP"): 
+
             if self.method.startswith("ElaNet"): # ElasticNet-SHAP
-                shap_values = shap.KernelExplainer(
-                    ElasticNetCV(
-                        l1_ratio=[.1, .5, .7, .9, .95, .99, 1], 
-                        cv=5, random_state=self.seed, n_jobs=self.n_jobs
-                    ).fit(X, y)
-                ).shap_values(X)
+                model = ElasticNetCV(
+                    l1_ratio=[.1, .5, .7, .9, .95, .99, 1], 
+                    cv=5, random_state=self.seed, n_jobs=self.n_jobs
+                ).fit(X, y)
+                explainer = shap.Explainer(
+                    model=model.predict, 
+                    masker=X, # pass a background data matrix instead of a function
+                    algorithm="linear"
+                )
+                shap_values = explainer(X)
+
             else:
                 X_train, X_test, y_train, y_test = train_test_split(
                     X, y, test_size=.2, random_state=self.seed
                 )
-
                 if self.method.startswith("RF"): # RF-SHAP
                     shap_values = shap.TreeExplainer(
-                        RandomForestRegressor(
+                        model=RandomForestRegressor(
                             random_state=self.seed, n_jobs=self.n_jobs
-                        ).fit(X_train, y_train)
+                        ).fit(X_train, y_train), 
                     ).shap_values(X_test)
 
                 elif self.method.startswith("LGBM"): # LGBM-SHAP
                     shap_values = shap.TreeExplainer(
-                        LGBMRegressor(
+                        model=LGBMRegressor(
                             max_depth=3, min_child_samples=5, 
                             random_state=self.seed, n_jobs=self.n_jobs
                         ).fit(X_train, y_train)
@@ -327,6 +343,11 @@ class FeatureSelector:
 
             importances = np.abs(shap_values).mean(axis=0)
 
+        ## Fallback:
+        if np.isnan(importances).any() or np.all(importances == 0):
+            raise ValueError("SHAP values are invalid (NaN or all zero).")
+
+        ## Selection:
         feature_importances = pd.Series(importances, index=X.columns).sort_values(ascending=False)
         
         if self.thresh_method == "explained_ratio":
@@ -335,12 +356,17 @@ class FeatureSelector:
             num_features = np.argmax(cumulative_importances > self.explained_ratio) + 1
             selected_feature_imp = feature_importances.head(num_features)
 
-        elif self.thresh_method == "threshold":
+        elif self.thresh_method == "fixed_threshold":
             selected_feature_imp = feature_importances[feature_importances.abs() > self.threshold]
 
         if self.max_feature_num is not None:
             selected_feature_imp = selected_feature_imp.head(self.max_feature_num)
-           
+        
+        ## Fallback:
+        if len(selected_feature_imp) < self.min_feature_num:
+            raise ValueError("Too few features are selected. Threshold may be too strict.")
+
+        ## Record:
         self.feature_importances = selected_feature_imp
         self.selected_features = list(selected_feature_imp.index)
 
@@ -620,7 +646,7 @@ def optimize_objective(trial, X, y, default_fs_params, model_name, seed, n_jobs=
             "fs_max_feature_num": trial.user_attrs["fs_max_feature_num"]
         }
 
-    if params["fs_thresh_method"] == "ftxed_threshold":
+    if params["fs_thresh_method"] == "fixed_threshold":
         params.update({
             "fs_threshold": trial.suggest_float("fs_threshold", 1e-5, 0.001), 
             "fs_explained_ratio": trial.user_attrs["fs_explained_ratio"]

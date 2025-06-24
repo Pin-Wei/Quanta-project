@@ -160,59 +160,52 @@ def plot_color_legend(color_dict, fig_size, output_path, box_size=.3):
 ## Main execution ---------------------------------------------------------------------
 
 if __name__ == "__main__":
-    note, input_folders, output_folder = [
-        (
+    note, input_folders, output_folder = {
+        0: (
+            "Original data and select features with ElasticNet.", 
+            {
+                version: os.path.join("outputs", folder) for version, folder in 
+                dict(zip(
+                    ["By_Age-Sex", "By_Age", "By_Sex", "Undivided"], 
+                    [ f"2025-06_original_ElasticNetCV{suffix}" for suffix in ["", "_sex-0", "_age-0", "_age-0_sex-0"] ]
+                )).items()
+            }, 
+            os.path.join("derivatives", "2025-06_original_ElasticNetCV_compare")
+        ), 
+        1: (
             "Original data and select features with RF-based permutation importance.", 
             {
                 version: os.path.join("outputs", folder) for version, folder in 
                 dict(zip(
                     ["By_Age-Sex", "By_Age", "By_Sex", "Undivided"], 
-                    [ f"2025-06-17_original_{suffix}" for suffix in ["", "_sex-0", "_age-0", "_age-0_sex-0"] ]
-                ))
+                    [ f"2025-06_original_RF-Permute{suffix}" for suffix in ["", "_sex-0", "_age-0", "_age-0_sex-0"] ]
+                )).items()
             }, 
-            os.path.join("derivatives", "2025-06-17_original_compare")
+            os.path.join("derivatives", "2025-06_original_RF-Permute_compare")
+        ), 
+        2: (
+            "Original data and select features with RF-based SHAP importance.", 
+            {
+                version: os.path.join("outputs", folder) for version, folder in 
+                dict(zip(
+                    ["By_Age-Sex", "By_Age", "By_Sex", "Undivided"], 
+                    [ f"2025-06_original_RF-SHAP{suffix}" for suffix in ["", "_sex-0", "_age-0", "_age-0_sex-0"] ]
+                )).items()
+            }, 
+            os.path.join("derivatives", "2025-06_original_RF-SHAP_compare")
+        ), 
+        3: (
+            "Original data and select features with LGBM-based SHAP importance.", 
+            {
+                version: os.path.join("outputs", folder) for version, folder in 
+                dict(zip(
+                    ["By_Age-Sex", "By_Age", "By_Sex", "Undivided"], 
+                    [ f"2025-06_original_LGBM-SHAP{suffix}" for suffix in ["", "_sex-0", "_age-0", "_age-0_sex-0"] ]
+                )).items()
+            }, 
+            os.path.join("derivatives", "2025-06_original_LGBM-SHAP_compare")
         )
-        # (
-        #     "Original data and select features with PCA.", 
-        #     {
-        #         "By_Age-Sex": os.path.join("outputs", "2025-05-21_original_seed=9865"), 
-        #         "By_Age"    : os.path.join("outputs", "2025-05-23_original_seed=9865_sex-0"), 
-        #         "By_Sex"    : os.path.join("outputs", "2025-05-23_original_seed=9865_age-0"), 
-        #         "Undivided" : os.path.join("outputs", "2025-05-23_original_seed=9865_age-0_sex-0")
-        #     }, 
-        #     os.path.join("derivatives", "2025-05-23_original_seed=9865_compare")
-        # ), 
-        # (
-        #     "Down-sampled data and select top-50 features.", 
-        #     {
-        #         "By_Age-Sex": os.path.join("outputs", "2025-05-28_down-sampled_seed=9865"), 
-        #         "By_Age"    : os.path.join("outputs", "2025-05-28_down-sampled_seed=9865_sex-0"), 
-        #         "By_Sex"    : os.path.join("outputs", "2025-05-28_down-sampled_seed=9865_age-0"), 
-        #         "Undivided" : os.path.join("outputs", "2025-05-28_down-sampled_seed=9865_age-0_sex-0")
-        #     },
-        #     os.path.join("derivatives", "2025-05-28_down-sampled_seed=9865_compare")
-        # ), 
-        # (
-        #     "Original data and select top-50 features.", 
-        #     {
-        #         "By_Age-Sex": os.path.join("outputs", "2025-05-29_original_seed=9865"), 
-        #         "By_Age"    : os.path.join("outputs", "2025-05-29_original_seed=9865_sex-0"), 
-        #         "By_Sex"    : os.path.join("outputs", "2025-05-29_original_seed=9865_age-0"), 
-        #         "Undivided" : os.path.join("outputs", "2025-05-29_original_seed=9865_age-0_sex-0")
-        #     }, 
-        #     os.path.join("derivatives", "2025-05-29_original_seed=9865_compare")
-        # ), 
-        # (
-        #     "Down-sampled data and select features with PCA.", 
-        #     {
-        #         "By_Age-Sex": os.path.join("outputs", "2025-06-02_down-sampled_seed=9865"), 
-        #         "By_Age"    : os.path.join("outputs", "2025-06-02_down-sampled_seed=9865_sex-0"), 
-        #         "By_Sex"    : os.path.join("outputs", "2025-06-02_down-sampled_seed=9865_age-0"), 
-        #         "Undivided" : os.path.join("outputs", "2025-06-02_down-sampled_seed=9865_age-0_sex-0")
-        #     },
-        #     os.path.join("derivatives", "2025-06-02_down-sampled_seed=9865_compare")
-        # )
-    ][int(sys.argv[1])]
+    }[int(sys.argv[1])]
     version_list = list(input_folders.keys())
     print(f"\n# Version comparison: {note}")
 
@@ -242,6 +235,11 @@ if __name__ == "__main__":
         result_DF_list.append(result_DF)
 
     final_result_DF = pd.concat(result_DF_list, ignore_index=True)
+    (
+        final_result_DF
+        .loc[:, ["Version", "Type", "SID", "Age", "Group", "PAD", "PAD_ac"]]
+        .to_csv(os.path.join(output_folder, "concatenated_results.csv"), index=False)
+    )
 
     for pad_name, pad_col in zip(["PAD", "PADAC"], ["PAD", "PAD_ac"]):
 
@@ -259,22 +257,21 @@ if __name__ == "__main__":
                     f"Type == '{ori_name}' & Version == '{ver_2}'"
                 )[pad_col]
 
-                # ## Levene's test for homogeneity of variance:
-                # levene_stats, levene_p = stats.levene(V1_abs, V2_abs)                
-                # if levene_p < 0.05:
-                #     equal_var = False
-                # else:
-                #     equal_var = True
+                ## Levene's test for homogeneity of variance:
+                levene_stats, levene_p = stats.levene(V1_abs, V2_abs)                
+                if levene_p < 0.05:
+                    equal_var = False
+                else:
+                    equal_var = True
 
-                # ## Independent sample t-test:
-                # ttest_results = stats.ttest_ind(
-                #     V1_abs, V2_abs, equal_var=equal_var, alternative="two-sided"
-                # )
-
-                ## Paired sample t-test:
-                ttest_results = stats.ttest_rel(
-                    V1_abs, V2_abs, alternative="two-sided"
+                ## Independent sample t-test:
+                ttest_results = stats.ttest_ind(
+                    V1_abs, V2_abs, equal_var=equal_var, alternative="two-sided"
                 )
+                # ## Paired sample t-test:
+                # ttest_results = stats.ttest_rel(
+                #     V1_abs, V2_abs, alternative="two-sided"
+                # )
                 t_stat = ttest_results.statistic
                 p_value = ttest_results.pvalue
                 df = ttest_results.df
@@ -299,9 +296,9 @@ if __name__ == "__main__":
                         "V2_mean": V2_abs.mean(), 
                         "V1_std": V1_abs.std(),
                         "V2_std": V2_abs.std(), 
-                        # "Levene_stat": levene_stats,
-                        # "Levene_p": levene_p, 
-                        # "Equal_var": str(equal_var)[:1], 
+                        "Levene_stat": levene_stats,
+                        "Levene_p": levene_p, 
+                        "Equal_var": str(equal_var)[:1], 
                         "DF": df, 
                         "T_stat": t_stat, 
                         "P_value": p_value, 
@@ -314,6 +311,8 @@ if __name__ == "__main__":
         print(f"\nStats results is saved to:\n{out_file}")
 
         ## Plots:
+        SAME_SCALE = [True, False][int(sys.argv[2]) if len(sys.argv) > 2 else 0] 
+
         for ori_name in desc.feature_orientations:
             print(f"\nPlotting for {ori_name[:3]}...")
 
@@ -332,14 +331,17 @@ if __name__ == "__main__":
                 version_list=version_list, 
                 color_dict=color_dict, 
                 stats_DF=stats_DF.query(f"Type == '{ori_name[:3]}'"), 
-                potential_y_lim=g1.axes[0, 0].get_ylim()[1]
+                potential_y_lim=g1.axes[0, 0].get_ylim()[1] if SAME_SCALE else 0
             )
 
             ## Ensure the same y-limits
-            y_lim = max([
-                g1.axes[0, 0].get_ylim()[1], 
-                g2.get_ylim()[1]
-            ])
+            if SAME_SCALE:
+                y_lim = max([
+                    g1.axes[0, 0].get_ylim()[1], 
+                    g2.get_ylim()[1]
+                ])
+            else:
+                y_lim = None
 
             g1.set(ylim=(0, y_lim))
             g1.figure.tight_layout()
@@ -354,3 +356,60 @@ if __name__ == "__main__":
             plt.close(g2.figure)
     
     print("\nDone!\n")
+
+## Archive: ===========================================================================
+
+# note, input_folders, output_folder = [
+#     (
+#         "Original data and select features with RF-based permutation importance.", 
+#         {
+#             version: os.path.join("outputs", folder) for version, folder in 
+#             dict(zip(
+#                 ["By_Age-Sex", "By_Age", "By_Sex", "Undivided"], 
+#                 [ f"2025-06-17_original_{suffix}" for suffix in ["", "_sex-0", "_age-0", "_age-0_sex-0"] ]
+#             ))
+#         }, 
+#         os.path.join("derivatives", "2025-06-17_original_compare")
+#     )
+#     (
+#         "Original data and select features with PCA.", 
+#         {
+#             "By_Age-Sex": os.path.join("outputs", "2025-05-21_original_seed=9865"), 
+#             "By_Age"    : os.path.join("outputs", "2025-05-23_original_seed=9865_sex-0"), 
+#             "By_Sex"    : os.path.join("outputs", "2025-05-23_original_seed=9865_age-0"), 
+#             "Undivided" : os.path.join("outputs", "2025-05-23_original_seed=9865_age-0_sex-0")
+#         }, 
+#         os.path.join("derivatives", "2025-05-23_original_seed=9865_compare")
+#     ), 
+#     (
+#         "Down-sampled data and select top-50 features.", 
+#         {
+#             "By_Age-Sex": os.path.join("outputs", "2025-05-28_down-sampled_seed=9865"), 
+#             "By_Age"    : os.path.join("outputs", "2025-05-28_down-sampled_seed=9865_sex-0"), 
+#             "By_Sex"    : os.path.join("outputs", "2025-05-28_down-sampled_seed=9865_age-0"), 
+#             "Undivided" : os.path.join("outputs", "2025-05-28_down-sampled_seed=9865_age-0_sex-0")
+#         },
+#         os.path.join("derivatives", "2025-05-28_down-sampled_seed=9865_compare")
+#     ), 
+#     (
+#         "Original data and select top-50 features.", 
+#         {
+#             "By_Age-Sex": os.path.join("outputs", "2025-05-29_original_seed=9865"), 
+#             "By_Age"    : os.path.join("outputs", "2025-05-29_original_seed=9865_sex-0"), 
+#             "By_Sex"    : os.path.join("outputs", "2025-05-29_original_seed=9865_age-0"), 
+#             "Undivided" : os.path.join("outputs", "2025-05-29_original_seed=9865_age-0_sex-0")
+#         }, 
+#         os.path.join("derivatives", "2025-05-29_original_seed=9865_compare")
+#     ), 
+#     (
+#         "Down-sampled data and select features with PCA.", 
+#         {
+#             "By_Age-Sex": os.path.join("outputs", "2025-06-02_down-sampled_seed=9865"), 
+#             "By_Age"    : os.path.join("outputs", "2025-06-02_down-sampled_seed=9865_sex-0"), 
+#             "By_Sex"    : os.path.join("outputs", "2025-06-02_down-sampled_seed=9865_age-0"), 
+#             "Undivided" : os.path.join("outputs", "2025-06-02_down-sampled_seed=9865_age-0_sex-0")
+#         },
+#         os.path.join("derivatives", "2025-06-02_down-sampled_seed=9865_compare")
+#     )
+# ]
+
