@@ -629,6 +629,12 @@ def plot_cormat(wide_sub_DF, targ_cols, corrwith_cols=None,
     Plot the correlation matrix for sub-dataframes.
     <no returns>
     '''
+    kwargs = {}
+    if x_col_names is not None: 
+        kwargs.update({"xticklabels": x_col_names})
+    if y_col_names is not None: 
+        kwargs.update({"yticklabels": y_col_names})
+
     if (not os.path.exists(output_path)) or overwrite:
         if corrwith_cols is None:
             cormat = wide_sub_DF.loc[:, targ_cols].corr()
@@ -656,15 +662,12 @@ def plot_cormat(wide_sub_DF, targ_cols, corrwith_cols=None,
             vmin=-1, vmax=1, cmap="RdBu_r", cbar=c_bar, 
             cbar_kws=None if c_bar is False else {"shrink": 0.5, "label": "$r$"}, 
             annot=pd.DataFrame(annot_mat), fmt = "", # annot_kws={"size": 16}, 
-            linewidth=.5
+            linewidth=.5, **kwargs
         )
         ax.set_ylabel("")
         ax.set_xlabel("")
-        if x_col_names is not None: 
-            ax.set_xticklabels(x_col_names, rotation=xr)
-        if y_col_names is not None: 
-            ax.set_yticks(np.arange(len(y_col_names)))
-            ax.set_yticklabels(y_col_names, rotation=xr)
+        ax.set_xticklabels(ax.get_xticklabels(), rotation=xr)
+        ax.set_yticklabels(ax.get_yticklabels(), rotation=yr)
         plt.tight_layout()
         plt.savefig(output_path)
         print(f"\nCorrelation matrix is saved to:\n{output_path}")
@@ -1160,7 +1163,7 @@ def main():
             targ_cols=st_features, 
             corrwith_cols=[ x[:3] for x in desc.feature_orientations ], 
             x_col_names=[ x[:3] for x in desc.feature_orientations ], 
-            y_col_names=st_features, yr=90, 
+            y_col_names=st_features, 
             output_path=os.path.join(config.output_folder, fn.replace("in", f"& standardized features in").replace(".png", f" (N={len(wide_DF)}).png")), 
             figsize=(8, 6),
             overwrite=args.overwrite
@@ -1170,7 +1173,7 @@ def main():
             targ_cols=basic_q_features, 
             corrwith_cols=[ x[:3] for x in desc.feature_orientations ], 
             x_col_names=[ x[:3] for x in desc.feature_orientations ], 
-            y_col_names=basic_q_features, yr=90, 
+            y_col_names=basic_q_features, 
             output_path=os.path.join(config.output_folder, fn.replace("in", f"& questionnaire features in").replace(".png", f" (N={len(wide_DF)}).png")), 
             figsize=(8, 10),
             overwrite=args.overwrite
@@ -1187,7 +1190,7 @@ def main():
         targ_cols=st_features, 
         corrwith_cols=[ x[:3] for x in desc.feature_orientations ], 
         x_col_names=[ x[:3] for x in desc.feature_orientations ], 
-        y_col_names=st_features, yr=90, 
+        y_col_names=st_features, 
         output_path=os.path.join(config.output_folder, config.pad_cormat_fn_template.replace("in <GroupName>", f"& standardized features across all groups (N={len(wide_DF)})")), 
         figsize=(8, 6),
         overwrite=args.overwrite
