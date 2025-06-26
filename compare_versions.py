@@ -1,5 +1,7 @@
 #!/usr/bin/python
 
+# python compare_versions.py <version_index> <same_scale>
+
 import os
 import re
 import sys
@@ -218,6 +220,10 @@ if __name__ == "__main__":
     with open(os.path.join(output_folder, "version notes.json"), 'w', encoding="utf-8") as f:
         json.dump(notes, f, ensure_ascii=False)
 
+    ## Whether to use the same scale for all plots
+    SAME_SCALE = [True, False][int(sys.argv[2]) if len(sys.argv) > 2 else 0] 
+    print(f"\n# Same scale for all plots: {SAME_SCALE}")
+
     ## Setup color legend (and save)
     color_dict = dict(zip(version_list, sns.color_palette("husl", len(version_list))))
     plot_color_legend(
@@ -311,8 +317,6 @@ if __name__ == "__main__":
         print(f"\nStats results is saved to:\n{out_file}")
 
         ## Plots:
-        SAME_SCALE = [True, False][int(sys.argv[2]) if len(sys.argv) > 2 else 0] 
-
         for ori_name in desc.feature_orientations:
             print(f"\nPlotting for {ori_name[:3]}...")
 

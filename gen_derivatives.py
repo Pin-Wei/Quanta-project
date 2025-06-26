@@ -73,9 +73,12 @@ args = parser.parse_args()
 
 class Config:
     def __init__(self):
+        self.js_code_path = "output_desc_viewer.js"
+        self.html_template_path = "output_desc_viewer.html"
         self.folder = args.folder
         self.input_folder = os.path.join("outputs", self.folder)
         self.output_folder = os.path.join("derivatives", self.folder)
+        self.html_desc_outpath = os.path.join(self.output_folder, "description.html")
         self.pad_type = "PAD" if args.use_pad else "PAD_ac"
         ## Tables: 
         self.model_info_filename     = "[table] model types and feature numbers.csv"
@@ -182,7 +185,30 @@ class ColorDicts:
             }
         }
 
-def load_description(config, const):
+def generate_html(config, input_json, output_path, overwrite=False): 
+    '''
+    Show the description of the output in a web browser.
+    '''
+    if not os.path.exists(output_path) or overwrite:
+        json_str = json.dumps(input_json, indent=2) # indent=2 for better readability
+
+        with open(config.js_code_path, "r") as f:
+            js_code = f.read()
+
+        with open(config.html_template_path, "r", encoding="utf-8") as f:
+            html_template = f.read()
+
+        html = (
+            html_template
+            .replace('__JSON_DATA__', json_str)
+            .replace('__JS_CODE__', js_code)
+        )
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write(html)
+            
+        print(f"\nHTML file with description viewer is saved to:\n{output_path}")
+
+def load_description(config, const, args):
     '''
     Load the parameters from the description file and update the description object.
     <returns>:
@@ -192,6 +218,12 @@ def load_description(config, const):
     desc_path = os.path.join(config.input_folder, "description.json")
     with open(desc_path, 'r', errors='ignore') as f:
         desc_json = json.load(f)
+
+    # Generate HTML version of the description:
+    generate_html(
+        config, desc_json, config.html_desc_outpath, overwrite=True # args.overwrite
+    )
+    print("!!! Note: overwrite for this file is set to True temporarily. !!!\n")
 
     class Description:
         def __init__(self):
@@ -984,8 +1016,12 @@ def plot_color_legend(color_dict, output_path,
 def main():
     config = Config()
     const = Constants()
-    desc = load_description(config, const)
     color_dicts = ColorDicts()
+
+    if not os.path.exists(config.output_folder):
+        os.makedirs(config.output_folder)
+        
+    desc = load_description(config, const, args)
 
     basic_q_features = basic_Q_features()
     st_features = ST_features()
@@ -993,9 +1029,6 @@ def main():
 
     pad_type = config.pad_type # for correlations 
     grouping_col = "AgeSex" if desc.sep_sex else "AgeGroup"
-
-    if not os.path.exists(config.output_folder):
-        os.makedirs(config.output_folder)
 
     ## Load data and save the combined result table:
     data_DF, selected_features, result_DF, combined_results_DF = load_data(
