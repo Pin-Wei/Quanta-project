@@ -1,6 +1,7 @@
 #!/usr/bin/python
 
 import os
+import re
 import argparse
 import logging
 import copy
@@ -23,8 +24,8 @@ from imblearn.over_sampling import SMOTENC
 from imblearn.under_sampling import RandomUnderSampler
 
 from sklearn.impute import SimpleImputer
-from sklearn.preprocessing import MinMaxScaler
-# from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
+from sklearn.decomposition import PCA
 # from sklearn.feature_selection import RFECV, SelectFromModel
 from sklearn.inspection import permutation_importance
 from sklearn.model_selection import KFold, train_test_split, cross_val_score
@@ -40,24 +41,27 @@ from xgboost import XGBRegressor
 ## Argument parser: ===================================================================
 
 parser = argparse.ArgumentParser(description="")
-## How to split data into groups:
-parser.add_argument("-age", "--age_method", type=int, default=2, 
-                    help="The method to define age groups (0: 'no_cut', 1: 'cut_at_40', 2: 'cut_44-45', 3: 'wais_8_seg').")
-parser.add_argument("-sex", "--by_gender", type=int, default=1, 
-                    help="Whether to separate the data by gender (0: False, 1: True).")
+## Data preparation:
+parser.add_argument("-dat", "--prepare_data_and_exit", action="store_true", default=False, 
+                    help="Only make the data, do not train any model.")
 parser.add_argument("-upd", "--use_prepared_data", type=str, default=None, 
                     help="File path of the data to be used (.csv).")
 ## Balancing data such that all groups have the same number of participants:
-parser.add_argument("-u", "--smotenc", action="store_true", default=False, 
+parser.add_argument("-up", "--smotenc", action="store_true", default=False, 
                     help="Up-sample the data using SMOTENC.")
-parser.add_argument("-d", "--downsample", action="store_true", default=False, 
+parser.add_argument("-down", "--downsample", action="store_true", default=False, 
                     help="Down-sample the data without replacement.")
-parser.add_argument("-b", "--bootstrap", action="store_true", default=False, 
+parser.add_argument("-boot", "--bootstrap", action="store_true", default=False, 
                     help="Down-sample the data with replacement (i.e., bootstrapping).")
 parser.add_argument("-bg", "--balancing_groups", type=int, default=0, 
                     help="The groups to be balanced.")
 parser.add_argument("-n", "--sample_size", type=int, default=None, 
                     help="The number of participants to up- or down-sample to. (if None, use the default number of participants per group set in constants.n_per_balanced_g).")
+## How to separate data into groups:
+parser.add_argument("-age", "--age_method", type=int, default=2, 
+                    help="The method to define age groups (0: 'no_cut', 1: 'cut_at_40', 2: 'cut_44-45', 3: 'wais_8_seg').")
+parser.add_argument("-sex", "--by_gender", type=int, default=0, 
+                    help="Whether to separate the data by gender (0: False, 1: True).")
 ## Split data into training and testing sets:
 parser.add_argument("-tsr", "--testset_ratio", type=float, default=0.3, 
                     help="The ratio of the testing set.")
@@ -71,16 +75,14 @@ parser.add_argument("-oam", "--only_all_mapping", action="store_true", default=F
                     help="Include only 'All' domain-approach mappings for feature selection.")
 parser.add_argument("-psf", "--preselected_feature_folder", type=str, default=None, 
                     help="The folder where the result files (.json) containing the selected features are stored.")
-parser.add_argument("-fsm", "--feature_selection_method", type=int, default=2, 
-                    help="The method to select features.")
-parser.add_argument("-fst", "--fs_thresh_method", type=int, default=1, 
-                    help="The method to determine the threshold for feature selection (0: 'threshold', 1: 'explained_ratio').")
-parser.add_argument("-mfn", "--max_feature_num", type=int, default=None, 
-                    help="The maximum number of features to be selected.")
-# parser.add_argument("--no_pca", action="store_true", default=False, 
-#                     help="Do not use PCA for feature selection.")
-# parser.add_argument("-epr", "--explained_ratio", type=float, default=0.9, 
-#                     help="The variance to be explained by the selected features.")
+# parser.add_argument("-fsm", "--feature_selection_method", type=int, default=2, 
+#                     help="The method to select features.")
+# parser.add_argument("-fst", "--fs_thresh_method", type=int, default=1, 
+#                     help="The method to determine the threshold for feature selection (0: 'threshold', 1: 'explained_ratio').")
+# parser.add_argument("-mfn", "--max_feature_num", type=int, default=None, 
+#                     help="The maximum number of features to be selected.")
+parser.add_argument("--no_pca", action="store_true", default=False, 
+                    help="Do not use PCA for feature reduction.")
 ## Model training:
 parser.add_argument("-pmf", "--pretrained_model_folder", type=str, default=None, 
                     help="The folder where the pre-trained model files (.pkl) are stored.")
@@ -105,8 +107,8 @@ class Config:
         self.balancing_groups = ["wais_8_seg", "cut_44-45"][args.balancing_groups]
         self.age_method = ["no_cut", "cut_at_40", "cut_44-45", "wais_8_seg"][args.age_method]
         self.by_gender = [False, True][args.by_gender]
-        self.feature_selection_method = [None, "LassoCV", "ElasticNetCV", "RF-Permute", "ElaNet-SHAP", "RF-SHAP", "LGBM-SHAP"][args.feature_selection_method]
-        self.fs_thresh_method = ["fixed_threshold", "explained_ratio"][args.fs_thresh_method]
+        # self.feature_selection_method = [None, "LassoCV", "ElasticNetCV", "RF-Permute", "ElaNet-SHAP", "RF-SHAP", "LGBM-SHAP"][args.feature_selection_method]
+        # self.fs_thresh_method = ["fixed_threshold", "explained_ratio"][args.fs_thresh_method]
         self.age_correction_method = ["Zhang et al. (2023)", "Beheshti et al. (2019)"][args.age_correction_method]
         self.age_correction_groups = ["wais_8_seg", "every_5_yrs"][0]
         self.seed = args.seed if args.seed is not None else np.random.randint(0, 10000)
@@ -116,9 +118,10 @@ class Config:
                 self.split_with_ids = json.load(f)
 
             self.testset_ratio = (
-                self.split_with_ids["Test"] / (self.split_with_ids["Train"] + self.split_with_ids["Test"])
+                len(self.split_with_ids["Test"]) / (len(self.split_with_ids["Train"]) + len(self.split_with_ids["Test"]))
             )
         else:
+            self.split_with_ids = None
             self.testset_ratio = args.testset_ratio
 
         folder_prefix = datetime.today().strftime('%Y-%m-%d')
@@ -134,10 +137,10 @@ class Config:
         else:
             folder_prefix += "_original"
 
-        if self.feature_selection_method is not None:
-            folder_prefix += f"_{self.feature_selection_method}"
-        else:
-            folder_prefix += "_Auto"
+        # if self.feature_selection_method is not None:
+        #     folder_prefix += f"_{self.feature_selection_method}"
+        # else:
+        #     folder_prefix += "_Auto"
 
         if args.age_method == 0:
             folder_prefix += "_age-0"
@@ -161,6 +164,7 @@ class Config:
         self.prepared_data_outpath = os.path.join(self.out_folder, "prepared_data.csv")
         self.split_ids_outpath = os.path.join(self.out_folder, "train_and_test_ids.json")
         self.scaler_outpath_format = os.path.join(self.out_folder, "scaler_{}.pkl")
+        self.pca_outpath_format = os.path.join(self.out_folder, "pca_{}_{}.pkl")
         self.model_outpath_format = os.path.join(self.out_folder, "models_{}_{}_{}.pkl")
         self.features_outpath_format = os.path.join(self.out_folder, "features_{}_{}_{}.csv")
         self.training_results_outpath_format = os.path.join(self.out_folder, "training_results_{}_{}.json")
@@ -246,148 +250,247 @@ class Constants:
         ## Number of parallel threads to use:
         self.n_jobs = 16
 
-class FeatureSelector:
-    def __init__(self, method, thresh_method, threshold, explained_ratio, max_feature_num, seed, n_jobs=16):
-        self.method = method
+class PCAEncoder:
+    def __init__(self, seed, n_iter=100):
+        self.n_iter = n_iter
         self.seed = seed
-        self.thresh_method = thresh_method
-        self.threshold = threshold
-        self.explained_ratio = explained_ratio
-        self.max_feature_num = max_feature_num
-        self.min_feature_num = 1 # 10
-        self.n_jobs = n_jobs
+        self.n_retained_comps = {}
+        self.fitted_pcas = {}
 
-    def fit(self, X: pd.DataFrame, y):
+    def fit(self, X, y=None):
         '''
-        Select features based on their importance weights.
-        - see: https://scikit-learn.org/stable/modules/feature_selection.html
-        - also: https://hyades910739.medium.com/%E6%B7%BA%E8%AB%87-tree-model-%E7%9A%84-feature-importance-3de73420e3f2
-
-        Permutation importance: https://scikit-learn.org/stable/modules/permutation_importance.html
-         + handling multicollinearity: https://scikit-learn.org/stable/auto_examples/inspection/plot_permutation_importance_multicollinear.html#sphx-glr-auto-examples-inspection-plot-permutation-importance-multicollinear-py
-         - may not be suitable
-
-        SHAP (SHapley Additive exPlanations): https://shap.readthedocs.io/en/latest/
-        - see 1: https://christophm.github.io/interpretable-ml-book/shapley.html
-        - see 2: https://ithelp.ithome.com.tw/articles/10329606
-        - see 3: https://medium.com/analytics-vidhya/shap-part-1-an-introduction-to-shap-58aa087a460c
-        - see 4: https://medium.com/@msvs.akhilsharma/unlocking-the-power-of-shap-analysis-a-comprehensive-guide-to-feature-selection-f05d33698f77
+        Categorize features, perform parallel analysis to determine the number of retained components for each category, and then fit PCA models for each category.
         '''
-        ## Check input:
-        assert isinstance(X, pd.DataFrame), "X should be a pandas DataFrame."
-        assert isinstance(y, pd.Series) or isinstance(y, np.ndarray), "y should be a pandas Series or a numpy array."
-        assert X.shape[0] == y.shape[0], "X and y should have the same number of rows."
-        assert (not np.any(np.isnan(X))) and (not np.any(np.isnan(y))), "X and y should not contain NaN values."
-        assert (not np.any(np.isinf(X))) and (not np.any(np.isinf(y))), "X and y should not contain infinite values."
+        categorized_features = self._categorize_features(X.columns)
+        self.categorized_features = categorized_features
 
-        ## Estimate feature importance:
-        if self.method == "LassoCV":
-            importances = LassoCV(
-                cv=5, random_state=self.seed
-            ).fit(X, y).coef_
+        for f, feature_list in self.categorized_features.items():
+            X_splited = X.loc[:, feature_list]
 
-        elif self.method == "ElasticNetCV":
-            importances = ElasticNetCV(
-                l1_ratio=[.1, .5, .7, .9, .95, .99, 1], 
-                cv=5, random_state=self.seed, n_jobs=self.n_jobs
-            ).fit(X, y).coef_
+            n_retained = self._parallel_analysis(X_splited)
+            self.n_retained_comps[f] = n_retained
 
-        elif self.method == "RF-Permute": # permutation importance 
-            # dist_matrix = 1 - X.corr(method="spearman").abs()
-            # dist_linkage = hierarchy.ward( # compute Ward’s linkage on a condensed distance matrix.
-            #     squareform(dist_matrix)
-            # ) 
-            # cluster_ids = hierarchy.fcluster( # form flat clusters from the hierarchical clustering defined by the given linkage matrix
-            #     Z=dist_linkage, t=2, criterion="distance" # t: distance threshold, manually selected
-            # )
-            # cid_to_fids = defaultdict(list) # cluster id to feature ids
-            # for idx, cluster_id in enumerate(cluster_ids):
-            #     cid_to_fids[cluster_id].append(idx)
-            # first_features = [ v[0] for v in cid_to_fids.values() ] # select the first feature in each cluster
-            X_train, X_test, y_train, y_test = train_test_split(
-                # X.iloc[:, first_features], y, test_size=.3, random_state=self.seed
-                X, y, test_size=.2, random_state=self.seed
-            )
-            rf_trained = RandomForestRegressor(
-                random_state=self.seed, n_jobs=self.n_jobs
-            ).fit(X_train, y_train)
-            importances = permutation_importance(
-                estimator=rf_trained, X=X_test, y=y_test, 
-                n_repeats=10, random_state=self.seed, n_jobs=self.n_jobs
-            ).importances_mean
-
-        elif self.method == "LightGBM": # impurity-based feature importance
-            # importances = LGBMRegressor(
-            #     importance_type=["split", "gain"][1], random_state=self.seed
-            # ).fit(X, y).feature_importances_
-            raise NotImplementedError("LightGBM impurity-based feature importance should not be used.")
-
-        elif self.method.endswith("SHAP"): 
-
-            if self.method.startswith("ElaNet"): # ElasticNet-SHAP
-                model = ElasticNetCV(
-                    l1_ratio=[.1, .5, .7, .9, .95, .99, 1], 
-                    cv=5, random_state=self.seed, n_jobs=self.n_jobs
-                ).fit(X, y)
-                explainer = shap.Explainer(
-                    model=model.predict, 
-                    masker=X, # pass a background data matrix instead of a function
-                    algorithm="linear"
-                )
-                shap_values = explainer(X)
-
-            else:
-                X_train, X_test, y_train, y_test = train_test_split(
-                    X, y, test_size=.2, random_state=self.seed
-                )
-                if self.method.startswith("RF"): # RF-SHAP
-                    shap_values = shap.TreeExplainer(
-                        model=RandomForestRegressor(
-                            random_state=self.seed, n_jobs=self.n_jobs
-                        ).fit(X_train, y_train), 
-                    ).shap_values(X_test)
-
-                elif self.method.startswith("LGBM"): # LGBM-SHAP
-                    shap_values = shap.TreeExplainer(
-                        model=LGBMRegressor(
-                            max_depth=3, min_child_samples=5, 
-                            random_state=self.seed, n_jobs=self.n_jobs
-                        ).fit(X_train, y_train)
-                    ).shap_values(X_test)
-
-            importances = np.abs(shap_values).mean(axis=0)
-
-        ## Fallback:
-        if np.isnan(importances).any() or np.all(importances == 0):
-            raise ValueError("SHAP values are invalid (NaN or all zero).")
-
-        ## Selection:
-        feature_importances = pd.Series(importances, index=X.columns).sort_values(ascending=False)
-        
-        if self.thresh_method == "explained_ratio":
-            normed_feature_imp = feature_importances / feature_importances.abs().sum()
-            cumulative_importances = normed_feature_imp.abs().cumsum()
-            num_features = np.argmax(cumulative_importances > self.explained_ratio) + 1
-            selected_feature_imp = feature_importances.head(num_features)
-
-        elif self.thresh_method == "fixed_threshold":
-            selected_feature_imp = feature_importances[feature_importances.abs() > self.threshold]
-
-        if self.max_feature_num is not None:
-            selected_feature_imp = selected_feature_imp.head(self.max_feature_num)
-        
-        ## Fallback:
-        if len(selected_feature_imp) < self.min_feature_num:
-            raise ValueError("Too few features are selected. Threshold may be too strict.")
-
-        ## Record:
-        self.feature_importances = selected_feature_imp
-        self.selected_features = list(selected_feature_imp.index)
+            pca = PCA(n_components=n_retained, random_state=self.seed)
+            pca.fit(X_splited)
+            self.fitted_pcas[f] = pca
 
         return self
-    
+
     def transform(self, X):
-        return X[self.selected_features]
+        '''
+        Transform the input data using the fitted PCA models.
+        '''
+        pca_names, pca_values = [], []
+
+        for f, feature_list in self.categorized_features.items():
+            X_splited = X.loc[:, feature_list]
+            pca = self.fitted_pcas[f]
+            X_transformed = pca.transform(X_splited)
+
+            for i in range(X_transformed.shape[1]):
+                pca_names.append(f"{f}_PC{i+1}")
+                pca_values.append(X_transformed[:, i])
+
+        return pd.DataFrame(data=np.column_stack(pca_values), columns=pca_names)
+    
+    def _categorize_features(self, included_features):
+        '''
+        Categorize features based on knowledge.
+        '''
+        categorized_features = {}
+    
+        for feature in included_features:
+            if feature.startswith("STRUCTURE"):
+                category, hemi, area, measure = feature.split("_")[3::]
+                if category == "NULL":
+                    f = f"STR_{category}_{measure}"
+                else:
+                    f = f"STR_{category}_{hemi[0]}_{measure}"
+                
+            else:
+                domain, task, measure, condition = feature.split("_")[:4]
+                measure = "fMRI" if measure == "MRI" else measure                
+
+                if domain == "LANGUAGE":
+                    f = f"{measure}_{domain.lower()}"
+                    
+                elif (measure == "EEG") and (task == "OSPAN") and ("Diff" in condition):
+                    f = f"{measure}_{domain.lower()}_{task.lower()} diff)"
+
+                elif (measure == "EEG") and (task == "GOFITTS"):
+                    suffix = re.sub(r"[0-9]+", "", condition).replace("ID", "").replace("W", "").replace("Slope", "-slope")
+                    f = f"{measure}_{domain.lower()}_{task.lower()} {suffix.lower()}"
+                
+                else:
+                    f = f"{measure}_{domain.lower()}_{task.lower()}"
+
+            if f in categorized_features.keys():
+                categorized_features[f].append(feature)
+            else:
+                categorized_features.update({f: [feature]})
+        
+        return categorized_features
+
+    def _parallel_analysis(self, X):
+        n_features = X.shape[1]
+        pca = PCA(n_components=n_features, random_state=self.seed)
+        eigv_raw = pca.fit(X).explained_variance_ratio_
+
+        eigv_rand = np.zeros((self.n_iter, n_features))
+        for i in range(self.n_iter):
+            X_r = np.random.normal(loc=0, scale=1, size=X.shape)
+            pca_rand = PCA(n_components=n_features, random_state=self.seed)
+            eigv_rand[i, :] = pca_rand.fit(X_r).explained_variance_ratio_
+
+        rand_eigv_mean = eigv_rand.mean(axis=0)
+        rand_eigv_std = eigv_rand.std(axis=0)
+        thresholds = rand_eigv_mean + rand_eigv_std * 1.64 # 95% confidence 
+        n_retained = max(np.argwhere(eigv_raw > thresholds)) + 1
+
+        return n_retained[0]
+
+# class FeatureSelector:
+#     def __init__(self, method, thresh_method, threshold, explained_ratio, max_feature_num, seed, n_jobs=16):
+#         self.method = method
+#         self.seed = seed
+#         self.thresh_method = thresh_method
+#         self.threshold = threshold
+#         self.explained_ratio = explained_ratio
+#         self.max_feature_num = max_feature_num
+#         self.min_feature_num = 1 # 10
+#         self.n_jobs = n_jobs
+
+#     def fit(self, X: pd.DataFrame, y):
+#         '''
+#         Select features based on their importance weights.
+#         - see: https://scikit-learn.org/stable/modules/feature_selection.html
+#         - also: https://hyades910739.medium.com/%E6%B7%BA%E8%AB%87-tree-model-%E7%9A%84-feature-importance-3de73420e3f2
+
+#         Permutation importance: https://scikit-learn.org/stable/modules/permutation_importance.html
+#          + handling multicollinearity: https://scikit-learn.org/stable/auto_examples/inspection/plot_permutation_importance_multicollinear.html#sphx-glr-auto-examples-inspection-plot-permutation-importance-multicollinear-py
+#          - may not be suitable
+
+#         SHAP (SHapley Additive exPlanations): https://shap.readthedocs.io/en/latest/
+#         - see 1: https://christophm.github.io/interpretable-ml-book/shapley.html
+#         - see 2: https://ithelp.ithome.com.tw/articles/10329606
+#         - see 3: https://medium.com/analytics-vidhya/shap-part-1-an-introduction-to-shap-58aa087a460c
+#         - see 4: https://medium.com/@msvs.akhilsharma/unlocking-the-power-of-shap-analysis-a-comprehensive-guide-to-feature-selection-f05d33698f77
+#         '''
+#         ## Check input:
+#         assert isinstance(X, pd.DataFrame), "X should be a pandas DataFrame."
+#         assert isinstance(y, pd.Series) or isinstance(y, np.ndarray), "y should be a pandas Series or a numpy array."
+#         assert X.shape[0] == y.shape[0], "X and y should have the same number of rows."
+#         assert (not np.any(np.isnan(X))) and (not np.any(np.isnan(y))), "X and y should not contain NaN values."
+#         assert (not np.any(np.isinf(X))) and (not np.any(np.isinf(y))), "X and y should not contain infinite values."
+
+#         ## Estimate feature importance:
+#         if self.method == "LassoCV":
+#             importances = LassoCV(
+#                 cv=5, random_state=self.seed
+#             ).fit(X, y).coef_
+
+#         elif self.method == "ElasticNetCV":
+#             importances = ElasticNetCV(
+#                 l1_ratio=[.1, .5, .7, .9, .95, .99, 1], 
+#                 cv=5, random_state=self.seed, n_jobs=self.n_jobs
+#             ).fit(X, y).coef_
+
+#         elif self.method == "RF-Permute": # permutation importance 
+#             # dist_matrix = 1 - X.corr(method="spearman").abs()
+#             # dist_linkage = hierarchy.ward( # compute Ward’s linkage on a condensed distance matrix.
+#             #     squareform(dist_matrix)
+#             # ) 
+#             # cluster_ids = hierarchy.fcluster( # form flat clusters from the hierarchical clustering defined by the given linkage matrix
+#             #     Z=dist_linkage, t=2, criterion="distance" # t: distance threshold, manually selected
+#             # )
+#             # cid_to_fids = defaultdict(list) # cluster id to feature ids
+#             # for idx, cluster_id in enumerate(cluster_ids):
+#             #     cid_to_fids[cluster_id].append(idx)
+#             # first_features = [ v[0] for v in cid_to_fids.values() ] # select the first feature in each cluster
+#             X_train, X_test, y_train, y_test = train_test_split(
+#                 # X.iloc[:, first_features], y, test_size=.3, random_state=self.seed
+#                 X, y, test_size=.2, random_state=self.seed
+#             )
+#             rf_trained = RandomForestRegressor(
+#                 random_state=self.seed, n_jobs=self.n_jobs
+#             ).fit(X_train, y_train)
+#             importances = permutation_importance(
+#                 estimator=rf_trained, X=X_test, y=y_test, 
+#                 n_repeats=10, random_state=self.seed, n_jobs=self.n_jobs
+#             ).importances_mean
+
+#         elif self.method == "LightGBM": # impurity-based feature importance
+#             # importances = LGBMRegressor(
+#             #     importance_type=["split", "gain"][1], random_state=self.seed
+#             # ).fit(X, y).feature_importances_
+#             raise NotImplementedError("LightGBM impurity-based feature importance should not be used.")
+
+#         elif self.method.endswith("SHAP"): 
+
+#             if self.method.startswith("ElaNet"): # ElasticNet-SHAP
+#                 model = ElasticNetCV(
+#                     l1_ratio=[.1, .5, .7, .9, .95, .99, 1], 
+#                     cv=5, random_state=self.seed, n_jobs=self.n_jobs
+#                 ).fit(X, y)
+#                 explainer = shap.Explainer(
+#                     model=model.predict, 
+#                     masker=X, # pass a background data matrix instead of a function
+#                     algorithm="linear"
+#                 )
+#                 shap_values = explainer(X)
+
+#             else:
+#                 X_train, X_test, y_train, y_test = train_test_split(
+#                     X, y, test_size=.2, random_state=self.seed
+#                 )
+#                 if self.method.startswith("RF"): # RF-SHAP
+#                     shap_values = shap.TreeExplainer(
+#                         model=RandomForestRegressor(
+#                             random_state=self.seed, n_jobs=self.n_jobs
+#                         ).fit(X_train, y_train), 
+#                     ).shap_values(X_test)
+
+#                 elif self.method.startswith("LGBM"): # LGBM-SHAP
+#                     shap_values = shap.TreeExplainer(
+#                         model=LGBMRegressor(
+#                             max_depth=3, min_child_samples=5, 
+#                             random_state=self.seed, n_jobs=self.n_jobs
+#                         ).fit(X_train, y_train)
+#                     ).shap_values(X_test)
+
+#             importances = np.abs(shap_values).mean(axis=0)
+
+#         ## Fallback:
+#         if np.isnan(importances).any() or np.all(importances == 0):
+#             raise ValueError("SHAP values are invalid (NaN or all zero).")
+
+#         ## Selection:
+#         feature_importances = pd.Series(importances, index=X.columns).sort_values(ascending=False)
+        
+#         if self.thresh_method == "explained_ratio":
+#             normed_feature_imp = feature_importances / feature_importances.abs().sum()
+#             cumulative_importances = normed_feature_imp.abs().cumsum()
+#             num_features = np.argmax(cumulative_importances > self.explained_ratio) + 1
+#             selected_feature_imp = feature_importances.head(num_features)
+
+#         elif self.thresh_method == "fixed_threshold":
+#             selected_feature_imp = feature_importances[feature_importances.abs() > self.threshold]
+
+#         if self.max_feature_num is not None:
+#             selected_feature_imp = selected_feature_imp.head(self.max_feature_num)
+        
+#         ## Fallback:
+#         if len(selected_feature_imp) < self.min_feature_num:
+#             raise ValueError("Too few features are selected. Threshold may be too strict.")
+
+#         ## Record:
+#         self.feature_importances = selected_feature_imp
+#         self.selected_features = list(selected_feature_imp.index)
+
+#         return self
+    
+#     def transform(self, X):
+#         return X[self.selected_features]
 
 ## Functions: =========================================================================
 
@@ -441,37 +544,45 @@ def save_description(args, config, constants, age_bin_labels, pad_age_groups):
             else:
                 n_per_balanced_g = args.sample_size
 
-    ## Define the type of the model to be used for training:
-    if args.training_model is not None:
-        included_models = [constants.model_names[args.training_model]]
-    elif args.pretrained_model_folder is not None:
-        included_models = "Depend on the previous results"
-    else:
-        included_models = constants.model_names
-
     desc = {
         "Seed": config.seed, 
         "UsePreparedData": args.use_prepared_data, 
         "RawDataVersion": config.data_file_path if args.use_prepared_data is None else "--", 
         "InclusionFileVersion": config.inclusion_file_path if args.use_prepared_data is None else "--", 
         "DataBalancingMethod": balancing_method, 
-        "BalancingGroups": balancing_groups,
-        "NumPerBalancedGroup": n_per_balanced_g, 
-        "SexSeparated": config.by_gender, 
-        "AgeGroups": age_bin_labels, 
-        "UsePredefinedSplit": config.split_with_ids, 
-        "TestsetRatio": config.testset_ratio, 
-        "UsePretrainedModels": args.pretrained_model_folder, 
-        "UsePreviouslySelectedFeatures": args.preselected_feature_folder, 
-        "FeatureOrientations": list(constants.domain_approach_mapping.keys()), 
-        "FeatureSelectionMethod": config.feature_selection_method, 
-        "FSThresholdMethod": config.fs_thresh_method,
-        "MaxFeatureNum": args.max_feature_num, 
-        "IncludedOptimizationModels": included_models, 
-        "SkippedIterationNum": args.ignore,  
-        "AgeCorrectionMethod": config.age_correction_method, 
-        "AgeCorrectionGroups": pad_age_groups
+        "BalancingGroups": balancing_groups, 
+        "NumPerBalancedGroup": n_per_balanced_g
     }
+
+    if not args.prepare_data_and_exit:
+
+        ## Define the type of the model to be used for training:
+        if args.training_model is not None:
+            included_models = [constants.model_names[args.training_model]]
+        elif args.pretrained_model_folder is not None:
+            included_models = "Depend on the previous results"
+        else:
+            included_models = constants.model_names
+
+        desc.update({
+            "SexSeparated": config.by_gender, 
+            "AgeGroups": age_bin_labels, 
+            "UsePredefinedSplit": config.split_with_ids, 
+            "TestsetRatio": config.testset_ratio, 
+            "UsePretrainedModels": args.pretrained_model_folder, 
+            "UsePreviouslySelectedFeatures": args.preselected_feature_folder, 
+            "FeatureOrientations": list(constants.domain_approach_mapping.keys()), 
+            # "FeatureSelectionMethod": config.feature_selection_method, 
+            # "FSThresholdMethod": config.fs_thresh_method,
+            # "MaxFeatureNum": args.max_feature_num, 
+            "FeatureReductionMethod": "PCA" if not args.no_pca else "None",
+            "IncludedOptimizationModels": included_models, 
+            "SkippedIterationNum": args.ignore,  
+            "AgeCorrectionMethod": config.age_correction_method, 
+            "AgeCorrectionGroups": pad_age_groups
+        })
+
+    ## Save the description to a JSON file:
     desc = convert_np_types(desc)
     with open(config.description_outpath, 'w', encoding='utf-8') as f:
         json.dump(desc, f, ensure_ascii=False)
@@ -484,26 +595,14 @@ def load_and_merge_datasets(data_file_path, inclusion_file_path):
     '''
     Read the data and inclusion table, and merge them.
     '''
-    ## Load the main dataset:
     DF = pd.read_csv(data_file_path)
+    DF.rename(columns={"BASIC_INFO_ID": "ID"}, inplace=True) # ensure consistent ID column name
     
-    ## Load the file marking whether a data has been collected from individual participants:
     inclusion_df = pd.read_csv(inclusion_file_path)
+    inclusion_df = inclusion_df.query("MRI == 1") # only include participants with MRI data
 
-    ## Only include participants with MRI data:
-    inclusion_df = inclusion_df.query("MRI == 1")
-
-    ## Ensure consistent ID column names:
-    if "BASIC_INFO_ID" in DF.columns:
-        DF = DF.rename(columns={"BASIC_INFO_ID": "ID"})
-
-    ## Merge the two dataframes to apply inclusion criteria:
-    DF = pd.merge(DF, inclusion_df[["ID"]], on="ID", how='inner')
-
-    ## Transform column data type:
-    DF["BASIC_INFO_SEX"] = DF["BASIC_INFO_SEX"].astype('int')
-    DF["BASIC_INFO_AGE"] = DF["BASIC_INFO_AGE"].astype('int')
-
+    DF = pd.merge(DF, inclusion_df[["ID"]], on="ID", how='inner') # apply inclusion criteria
+    
     return DF
 
 def make_balanced_dataset(DF, balancing_method, age_bin_dict, n_per_balanced_g, seed):
@@ -621,13 +720,22 @@ def preprocess_grouped_dataset(X, y, ids, split_with_ids, testset_ratio, trained
     - (dict): A dictionary of train-test splited data, storing 
               the standardized feature values, age, and ID numbers of participants.
     '''
+    ## Remove features with too many missing values:
+    n_subjs = len(X)
+    na_rates = pd.Series(X.isnull().sum() / n_subjs)
+    Q1 = na_rates.quantile(.25)
+    Q3 = na_rates.quantile(.75)
+    IQR = Q3 - Q1
+    outliers = na_rates[na_rates > (Q3 + IQR * 1.5)]
+    X_cleaned = X.drop(columns=outliers.index)
+
     ## Fill missing values:
     imputer = SimpleImputer(strategy="median")
-    X_imputed = pd.DataFrame(imputer.fit_transform(X), columns=X.columns)
+    X_imputed = pd.DataFrame(imputer.fit_transform(X_cleaned), columns=X_cleaned.columns)
     
     ## Split into training and testing sets, and then apply feature scaling:
     if trained_scaler is None:
-        scaler = MinMaxScaler()
+        scaler = StandardScaler() # MinMaxScaler()
 
     if testset_ratio == 0: # no testing set, use the whole dataset for training
         X_train, y_train, id_train = X_imputed, y, ids
@@ -641,10 +749,10 @@ def preprocess_grouped_dataset(X, y, ids, split_with_ids, testset_ratio, trained
     else: 
         if split_with_ids is not None: # split the dataset based on pre-defined IDs
             id_train, id_test = split_with_ids["Train"], split_with_ids["Test"]
-            X_train = X_imputed[X_imputed.index.isin(id_train)]
-            X_test = X_imputed[X_imputed.index.isin(id_test)]
-            y_train = y[y.index.isin(id_train)]
-            y_test = y[y.index.isin(id_test)]
+            X_train = X_imputed[ids.isin(id_train)]
+            X_test = X_imputed[ids.isin(id_test)]
+            y_train = y[ids.isin(id_train)]
+            y_test = y[ids.isin(id_test)]
 
         else: # split the dataset based on the given ratio
             X_train, X_test, y_train, y_test, id_train, id_test = train_test_split(
@@ -662,8 +770,8 @@ def preprocess_grouped_dataset(X, y, ids, split_with_ids, testset_ratio, trained
         "X_test": X_test_scaled, 
         "y_train": y_train, 
         "y_test": y_test, 
-        "id_train": id_train.reset_index(drop=True), 
-        "id_test": id_test.reset_index(drop=True), 
+        "id_train": id_train.tolist() if isinstance(id_train, pd.Series) else id_train, # id_train.reset_index(drop=True), 
+        "id_test": id_test.tolist() if isinstance(id_test, pd.Series) else id_test, # id_test.reset_index(drop=True), 
         "scaler": scaler if trained_scaler is None else trained_scaler
     }
 
@@ -673,17 +781,17 @@ def build_pipline(params, model_name, seed, n_jobs=16):
     - (sklearn.pipeline.Pipeline): A pipeline of feature selection and regression model.
     # see: https://scikit-learn.org/stable/modules/generated/sklearn.pipeline.Pipeline.html
     '''
-    ## Feature selection:
-    selector = FeatureSelector(
-        method=params["fs_method"], 
-        thresh_method=params["fs_thresh_method"], 
-        threshold=params["fs_threshold"], 
-        explained_ratio=params["fs_explained_ratio"],
-        max_feature_num=params["fs_max_feature_num"], 
-        seed=seed, 
-        n_jobs=n_jobs
-    )
-    
+    # ## Feature selection:
+    # feature_selector = FeatureSelector(
+    #     method=params["fs_method"], 
+    #     thresh_method=params["fs_thresh_method"], 
+    #     threshold=params["fs_threshold"], 
+    #     explained_ratio=params["fs_explained_ratio"],
+    #     max_feature_num=params["fs_max_feature_num"], 
+    #     seed=seed, 
+    #     n_jobs=n_jobs
+    # )
+
     ## Regression model:
     if model_name == "ElasticNet":
         model = ElasticNet(
@@ -733,44 +841,47 @@ def build_pipline(params, model_name, seed, n_jobs=16):
         )
 
     return Pipeline([
-        ("feature_selector", selector), 
+        # ("feature_selector", feature_selector), 
         ("regressor", model)
     ])
 
-def optimize_objective(trial, X, y, default_fs_params, model_name, seed, n_jobs=16): 
+def optimize_objective(trial, X, y, # default_fs_params, 
+                       model_name, seed, n_jobs=16): 
     '''
     Return:
     - (float): Average mean absolute error (MAE) score across cross validation.
     '''
-    ## Set up feature selection parameters:
-    for k, v in default_fs_params.items():
-        trial.set_user_attr(k, v)
+    # ## Set up feature selection parameters:
+    # for k, v in default_fs_params.items():
+    #     trial.set_user_attr(k, v)
 
-    if default_fs_params["fs_method"] is None:
-        # params = {
-        #     "fs_method": trial.suggest_categorical("fs_method", ["LassoCV", "ElasticNetCV", "RF-Permute", "ElaNet-SHAP", "RF-SHAP", "LGBM-SHAP"]), 
-        #     "fs_thresh_method": trial.user_attrs["fs_thresh_method"], 
-        #     "fs_max_feature_num": trial.user_attrs["fs_max_feature_num"]
-        # }
-        raise NotImplementedError("Currently, unspecified feature selection method is not supported.")
-    else:
-        params = {
-            "fs_method": trial.user_attrs["fs_method"], 
-            "fs_thresh_method": trial.user_attrs["fs_thresh_method"], 
-            "fs_max_feature_num": trial.user_attrs["fs_max_feature_num"]
-        }
+    # if default_fs_params["fs_method"] is None:
+    #     # params = {
+    #     #     "fs_method": trial.suggest_categorical("fs_method", ["LassoCV", "ElasticNetCV", "RF-Permute", "ElaNet-SHAP", "RF-SHAP", "LGBM-SHAP"]), 
+    #     #     "fs_thresh_method": trial.user_attrs["fs_thresh_method"], 
+    #     #     "fs_max_feature_num": trial.user_attrs["fs_max_feature_num"]
+    #     # }
+    #     raise NotImplementedError("Currently, unspecified feature selection method is not supported.")
+    # else:
+    #     params = {
+    #         "fs_method": trial.user_attrs["fs_method"], 
+    #         "fs_thresh_method": trial.user_attrs["fs_thresh_method"], 
+    #         "fs_max_feature_num": trial.user_attrs["fs_max_feature_num"]
+    #     }
 
-    if params["fs_thresh_method"] == "fixed_threshold":
-        params.update({
-            "fs_threshold": trial.suggest_float("fs_threshold", 1e-5, 0.001), 
-            "fs_explained_ratio": trial.user_attrs["fs_explained_ratio"]
-        })
+    # if params["fs_thresh_method"] == "fixed_threshold":
+    #     params.update({
+    #         "fs_threshold": trial.suggest_float("fs_threshold", 1e-5, 0.001), 
+    #         "fs_explained_ratio": trial.user_attrs["fs_explained_ratio"]
+    #     })
 
-    elif params["fs_thresh_method"] == "explained_ratio":
-        params.update({
-            "fs_explained_ratio": trial.suggest_float("fs_explained_ratio", 0.9, 1), 
-            "fs_threshold": trial.user_attrs["fs_threshold"]
-        })
+    # elif params["fs_thresh_method"] == "explained_ratio":
+    #     params.update({
+    #         "fs_explained_ratio": trial.suggest_float("fs_explained_ratio", 0.9, 1), 
+    #         "fs_threshold": trial.user_attrs["fs_threshold"]
+    #     })
+
+    params = {}
 
     ## Set up model parameters:
     if model_name == "ElasticNet":
@@ -824,7 +935,8 @@ def optimize_objective(trial, X, y, default_fs_params, model_name, seed, n_jobs=
 
     return -1 * np.mean(neg_mae_scores)
 
-def train_and_evaluate(X, y, fs_method, thresh_method, max_feature_num, model_names, seed, n_jobs=16):
+def train_and_evaluate(X, y, # fs_method, thresh_method, max_feature_num, 
+                       model_names, seed, n_jobs=16):
     '''
     Inputs:
     - X (pd.DataFrame)  : Feature matrix.
@@ -846,16 +958,17 @@ def train_and_evaluate(X, y, fs_method, thresh_method, max_feature_num, model_na
             sampler=optunahub.load_module("samplers/auto_sampler").AutoSampler() 
                 ## automatically selects an algorithm internally, see: https://medium.com/optuna/autosampler-automatic-selection-of-optimization-algorithms-in-optuna-1443875fd8f9
         )
-        default_fs_params = {
-            "fs_method": fs_method, 
-            "fs_thresh_method": thresh_method, 
-            "fs_max_feature_num": max_feature_num, 
-            "fs_explained_ratio": None, 
-            "fs_threshold": None
-        }
+        # default_fs_params = {
+            # "fs_method": fs_method, 
+        #     "fs_thresh_method": thresh_method, 
+        #     "fs_max_feature_num": max_feature_num, 
+        #     "fs_explained_ratio": None, 
+        #     "fs_threshold": None
+        # }
         study.optimize(
             lambda trial: optimize_objective(
-                trial, X, y, default_fs_params, model_name, seed, n_jobs
+                trial, X, y, # default_fs_params, 
+                model_name, seed, n_jobs
             ),
             n_trials=50, show_progress_bar=True
         )
@@ -864,9 +977,9 @@ def train_and_evaluate(X, y, fs_method, thresh_method, max_feature_num, model_na
         ## Refit the model with the best hyperparameters found:
         logging.info("Evaluating the model with the best hyperparameters ...")
         best_params = study.best_params
-        best_params.update({
-            k: v for k, v in default_fs_params.items() if k not in best_params.keys()
-        })
+        # best_params.update({
+        #     k: v for k, v in default_fs_params.items() if k not in best_params.keys()
+        # })
         best_pipeline = build_pipline(
             best_params, model_name, seed, n_jobs
         )
@@ -880,12 +993,23 @@ def train_and_evaluate(X, y, fs_method, thresh_method, max_feature_num, model_na
             if np.isnan(y_pred).any(): 
                 raise ValueError("Model prediction contains NaN values.")
             mae_scores.append(mean_absolute_error(y_test, y_pred))
-
+        
         ## Storing results:
+        trained_model = best_pipeline.named_steps["regressor"]
+
+        if hasattr(trained_model, "coef_"):
+            feature_importance = pd.Series(trained_model.coef_, index=X.columns)
+        elif hasattr(trained_model, "feature_importances_"):
+            feature_importance = pd.Series(trained_model.feature_importances_, index=X.columns)
+        else:
+            feature_importance = None
+
         results[model_name] = {
-            "trained_model": best_pipeline.named_steps["regressor"],  
-            "selected_features": best_pipeline.named_steps["feature_selector"].selected_features, 
-            "feature_importances": best_pipeline.named_steps["feature_selector"].feature_importances, 
+            "trained_model": trained_model,  
+            "selected_features": X.columns.tolist(), 
+            # "selected_features": best_pipeline.named_steps["feature_selector"].selected_features, 
+            "feature_importances": feature_importance,
+            # "feature_importances": best_pipeline.named_steps["feature_selector"].feature_importances, 
             "cv_scores": mae_scores, 
             "mae_mean": np.mean(mae_scores), 
             "mae_std": np.std(mae_scores)
@@ -981,6 +1105,8 @@ def main():
         filename=config.logging_outpath
     ) # https://zx7978123.medium.com/python-logging-%E6%97%A5%E8%AA%8C%E7%AE%A1%E7%90%86%E6%95%99%E5%AD%B8-60be0a1a6005
 
+    logging.info(f"\nStart at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+
     ## Copy the current Python script to the output folder:
     shutil.copyfile(
         src=os.path.abspath(__file__), 
@@ -1058,6 +1184,11 @@ def main():
         ## Save it to file:
         DF_prepared.to_csv(config.prepared_data_outpath, index=False)
 
+    ## If user only wants to prepare the data:
+    if args.prepare_data_and_exit:
+        logging.info("Data preparation is completed. Exiting the program ...")
+        return
+
     ## Divide the dataset into groups and define their labels:
     if args.by_gender:
         logging.info("Separating data according to participants' age ranges and genders ...")
@@ -1125,8 +1256,8 @@ def main():
         json.dump(split_with_ids, f, ensure_ascii=False)
 
     logging.info("Preprocessing of all data subsets is completed.")
-    logging.info("Starting loop through all groups and orientations ...")
-    
+
+    logging.info("Starting loop through all groups and orientations ...")    
     record_if_failed = [] # a list of strings to record the failed processing
     iter = 0 # iteration counter for skipping
 
@@ -1155,13 +1286,20 @@ def main():
                             saved_results = json.load(f)
 
                         best_model_name = saved_results["Model"]
-                        selected_features = saved_results["FeatureNames"]
+
+                        if not args.no_pca:
+                            pca_outpath = config.pca_outpath_format.format(group_name, ori_name)
+                            with open(pca_outpath, 'rb') as f:
+                                pca = pickle.load(f)
+                            X_train_transformed = pca.transform(data_dict["X_train"])
+                        else:
+                            raise NotImplementedError("Using PCA is required for now.")
+                            # selected_features = saved_results["FeatureNames"]
+                            # X_train_selected = data_dict["X_train"].loc[:, selected_features]
 
                         saved_model = os.path.join("outputs", args.pretrained_model_folder, f"models_{group_name}_{ori_name}_{best_model_name}.pkl")
                         with open(saved_model, 'rb') as f:
                             trained_model = pickle.load(f)
-                        
-                        X_train_selected = data_dict["X_train"].loc[:, selected_features]
 
                     else: # do what supposed to be done
                         if args.preselected_feature_folder is not None: 
@@ -1197,13 +1335,26 @@ def main():
                             else: # good, go ahead
                                 X_train_included = data_dict["X_train"].loc[:, included_features]
                                 
+                                if not args.no_pca:
+                                    logging.info("Performing dimensionality reduction ...")
+                                    pca = PCAEncoder(seed=config.seed, n_iter=100)
+                                    pca.fit(X=X_train_included)
+                                    X_train_transformed = pca.transform(X=X_train_included)
+
+                                    logging.info("Saving the PCA model ...")
+                                    pca_outpath = config.pca_outpath_format.format(group_name, ori_name)
+                                    with open(pca_outpath, 'wb') as f:
+                                        pickle.dump(pca, f)
+                                else:
+                                    raise NotImplementedError("Using PCA is required for now.")
+                                
                                 logging.info("Training and evaluating models ...")
                                 results = train_and_evaluate(
-                                    X=X_train_included, 
+                                    X=X_train_transformed, 
                                     y=data_dict["y_train"], 
-                                    fs_method=config.feature_selection_method, 
-                                    thresh_method=config.fs_thresh_method, 
-                                    max_feature_num=args.max_feature_num, 
+                                    # fs_method=config.feature_selection_method, 
+                                    # thresh_method=config.fs_thresh_method, 
+                                    # max_feature_num=args.max_feature_num, 
                                     model_names=included_models, 
                                     seed=config.seed, 
                                     n_jobs=constants.n_jobs
@@ -1212,15 +1363,16 @@ def main():
                                     results, key=lambda x: results[x]["mae_mean"]
                                 )
                                 trained_model = results[best_model_name]["trained_model"]
-                                selected_features = results[best_model_name]["selected_features"]
                                 
                                 logging.info("Saving the best-performing model (.pkl) ...")
                                 model_outpath = config.model_outpath_format.format(group_name, ori_name, best_model_name)
                                 with open(model_outpath, 'wb') as f:
                                     pickle.dump(trained_model, f)
 
+                                selected_features = results[best_model_name]["selected_features"]
+
                                 logging.info("Saving the best selected features and their importances ...")
-                                features_outpath = config.features_outpath_format.format(group_name, ori_name, results[best_model_name]["fs_method"])
+                                features_outpath = config.features_outpath_format.format(group_name, ori_name, "") #, results[best_model_name]["fs_method"])
                                 results[best_model_name]["feature_importances"].to_csv(
                                     features_outpath, header=False
                                 )
@@ -1247,8 +1399,14 @@ def main():
                                     json.dump(model_results, f)
                             
                     logging.info("Applying the best model to the training set ...")
-                    X_train_selected = data_dict["X_train"].loc[:, selected_features]
-                    y_pred_train = trained_model.predict(X_train_selected)
+
+                    if not args.no_pca:
+                        y_pred_train = trained_model.predict(X_train_transformed)
+                    else:
+                        raise NotImplementedError("Using PCA is required for now.")
+                        # X_train_selected = data_dict["X_train"].loc[:, selected_features]
+                        # y_pred_train = trained_model.predict(X_train_selected)
+
                     pad_train = y_pred_train - data_dict["y_train"]
 
                     if config.age_correction_method == "Zhang et al. (2023)":
@@ -1299,13 +1457,20 @@ def main():
                             "CorrectedPredictedAge": list(corrected_y_pred_train), 
                             "AgeCorrectionTable": correction_ref.to_dict(orient='records') if type(correction_ref) is not dict else correction_ref, 
                             "NumberOfFeatures": len(selected_features), 
-                            "FeatureNames": list(selected_features), 
+                            "FeatureNames": list(selected_features) 
                         }
 
                     else:
                         logging.info("Evaluating the best model on the testing set ...")
-                        X_test_selected = data_dict["X_test"].loc[:, selected_features]                       
-                        y_pred_test = trained_model.predict(X_test_selected)
+
+                        if not args.no_pca:
+                            X_test_transformed = pca.transform(data_dict["X_test"])
+                            y_pred_test = trained_model.predict(X_test_transformed)
+                        else:
+                            raise NotImplementedError("Using PCA is required for now.")
+                            # X_test_selected = data_dict["X_test"].loc[:, selected_features]                       
+                            # y_pred_test = trained_model.predict(X_test_selected)
+
                         y_pred_test = pd.Series(y_pred_test, index=data_dict["y_test"].index)
                         pad = y_pred_test - data_dict["y_test"]
 
@@ -1351,7 +1516,7 @@ def main():
                             "CorrectedPredictedAge": list(corrected_y_pred_test), 
                             "AgeCorrectionTable": correction_ref.to_dict(orient='records') if type(correction_ref) is not dict else correction_ref, 
                             "NumberOfFeatures": len(selected_features), 
-                            "FeatureNames": list(selected_features), 
+                            "FeatureNames": list(selected_features)
                         }
 
                     save_results = convert_np_types(save_results)
@@ -1366,10 +1531,11 @@ def main():
     with open(config.failure_record_outpath, 'w') as f:
         f.write("\n".join(record_if_failed))
     
-    logging.info("The record of failed processing is saved.")    
+    logging.info("The record of failed processing is saved.")
+
+    logging.info(f"\nFinished at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
 
 if __name__ == "__main__":
     main()
-    print(f"\nFinished at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
 
 
