@@ -1,7 +1,10 @@
 #!/usr/bin/python
 
+# Usage: python age_pred_model.py -age [0|2] -iam (-pmf <pretrained_model_folder>)
+
 import os
 import re
+import sys
 import argparse
 import logging
 import copy
@@ -14,7 +17,7 @@ from itertools import product
 
 import numpy as np
 import pandas as pd
-import shap # SHapley Additive exPlanations
+# import shap # SHapley Additive exPlanations
 import optuna
 import optunahub
 # from scipy.cluster import hierarchy
@@ -22,12 +25,13 @@ import optunahub
 
 from imblearn.over_sampling import SMOTENC 
 from imblearn.under_sampling import RandomUnderSampler
+from factor_analyzer import Rotator
 
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.decomposition import PCA
 # from sklearn.feature_selection import RFECV, SelectFromModel
-from sklearn.inspection import permutation_importance
+# from sklearn.inspection import permutation_importance
 from sklearn.model_selection import KFold, train_test_split, cross_val_score
 from sklearn.metrics import mean_absolute_error
 from sklearn.pipeline import Pipeline
@@ -66,6 +70,7 @@ parser.add_argument("-sex", "--by_gender", type=int, default=0,
 parser.add_argument("-tsr", "--testset_ratio", type=float, default=0.3, 
                     help="The ratio of the testing set.")
 parser.add_argument("-sid", "--split_with_ids", type=str, default=None, 
+                    # default=os.path.join("outputs", "train_and_test_ids.json"), 
                     help="File path of a dictionary (.json) containing two lists of IDs to be used for splitting the data into training and testing sets. "+
                     "If provided, the testset_ratio will be determined by its length.")
 ## Feature selection:
@@ -83,6 +88,8 @@ parser.add_argument("-psf", "--preselected_feature_folder", type=str, default=No
 #                     help="The maximum number of features to be selected.")
 parser.add_argument("--no_pca", action="store_true", default=False, 
                     help="Do not use PCA for feature reduction.")
+parser.add_argument("-rhcf", "--remove_highly_correlated_features", action="store_true", default=False, 
+                    help="Remove highly correlated features before feature reduction (PCA).")
 ## Model training:
 parser.add_argument("-pmf", "--pretrained_model_folder", type=str, default=None, 
                     help="The folder where the pre-trained model files (.pkl) are stored.")
@@ -95,12 +102,11 @@ parser.add_argument("-s", "--seed", type=int, default=9865,
 ## Age correction:
 parser.add_argument("-acm", "--age_correction_method", type=int, default=0, 
                     help="The method to correct age (0: 'Zhang et al. (2023)', 1: 'Beheshti et al. (2019)').")
-args = parser.parse_args()
 
 ## Classes: ===========================================================================
 
 class Config:
-    def __init__(self):
+    def __init__(self, args):
         self.source_path = os.path.dirname(os.path.abspath(__file__))
         self.data_file_path = os.path.join(self.source_path, "rawdata", "DATA_ses-01_2024-12-09.csv")
         self.inclusion_file_path = os.path.join(self.source_path, "rawdata", "InclusionList_ses-01.csv")
@@ -164,9 +170,12 @@ class Config:
         self.prepared_data_outpath = os.path.join(self.out_folder, "prepared_data.csv")
         self.split_ids_outpath = os.path.join(self.out_folder, "train_and_test_ids.json")
         self.scaler_outpath_format = os.path.join(self.out_folder, "scaler_{}.pkl")
-        self.pca_outpath_format = os.path.join(self.out_folder, "pca_{}_{}.pkl")
+        self.reducer_outpath_format = os.path.join(self.out_folder, "reducer_{}_{}.pkl")
+        self.pc_loadings_outpath_format = os.path.join(self.out_folder, "PC_loadings_{}_{}.xlsx")
+        self.rc_loadings_outpath_format = os.path.join(self.out_folder, "RC_loadings_{}_{}.xlsx")
+        self.dropped_features_outpath_format = os.path.join(self.out_folder, "dropped_features_{}_{}.txt")
         self.model_outpath_format = os.path.join(self.out_folder, "models_{}_{}_{}.pkl")
-        self.features_outpath_format = os.path.join(self.out_folder, "features_{}_{}_{}.csv")
+        self.features_outpath_format = os.path.join(self.out_folder, "features_{}_{}.csv")
         self.training_results_outpath_format = os.path.join(self.out_folder, "training_results_{}_{}.json")
         self.results_outpath_format = os.path.join(self.out_folder, "results_{}_{}.json")
         self.failure_record_outpath = os.path.join(self.out_folder, "failure_record.txt")
@@ -250,63 +259,127 @@ class Constants:
         ## Number of parallel threads to use:
         self.n_jobs = 16
 
-class PCAEncoder:
+class FeatureReducer:
     def __init__(self, seed, n_iter=100):
-        self.n_iter = n_iter
         self.seed = seed
-        self.n_retained_comps = {}
-        self.fitted_pcas = {}
+        self.n_iter = n_iter
+        self.dropped_features = []
+        self.n_retained_components = {}
+        self.fitted_pca = {}
+        self.loadings = {}
+        self.rotated_loadings = {}
+        self.rotated_components = {}
 
-    def fit(self, X, y=None):
+    def fit(self, X, rhcf=False):
         '''
-        Categorize features, perform parallel analysis to determine the number of retained components for each category, and then fit PCA models for each category.
+        Maths underlying Principal Component Analysis (PCA):
+        # https://en.wikipedia.org/wiki/Principal_component_analysis#Details
+        # https://github.com/scikit-learn/scikit-learn/blob/main/sklearn/decomposition/_pca.py#L113
+        
+        Varimax rotation:
+        # https://scikit-learn.org/stable/auto_examples/decomposition/plot_varimax_fa.html
+
+        <Return attributes>
+        - categorized_features: a dictionary storing the features for each category.
+        - n_retained_components: a dictionary storing the number of retained components for each category.
+        - fitted_pca: a dictionary storing the fitted PCA models for each category.
         '''
+        ## Categorize features (so that n/p >= 5)
         categorized_features = self._categorize_features(X.columns)
         self.categorized_features = categorized_features
 
+        ## For each category
         for f, feature_list in self.categorized_features.items():
             X_splited = X.loc[:, feature_list]
 
-            n_retained = self._parallel_analysis(X_splited)
-            self.n_retained_comps[f] = n_retained
+            ## Remove highly correlated features
+            if rhcf:
+                X_splited, dropped_features = self._remove_highly_correlated_features(X_splited)
+                self.dropped_features.extend(dropped_features)
 
+            ## Perform parallel analysis to determine the number of components to retain
+            n_retained = self._parallel_analysis(X_splited)
+            self.n_retained_components[f] = n_retained
+
+            ## Fit a PCA model
             pca = PCA(n_components=n_retained, random_state=self.seed)
             pca.fit(X_splited)
-            self.fitted_pcas[f] = pca
+            self.fitted_pca[f] = pca
 
+            ## Calculate loadings
+            eigenvectors = pca.components_.T
+            eigenvalues = pca.explained_variance_
+            loadings = eigenvectors * np.sqrt(eigenvalues)
+            self.loadings[f] = pd.DataFrame(
+                data=loadings, 
+                columns=[f"PC{i+1}" for i in range(n_retained)], 
+                index=list(X_splited.columns)
+            )
+
+            if loadings.shape[1] > 1: # Apply varimax rotation
+                rotator = Rotator(method="varimax")
+                rotated_loadings = rotator.fit_transform(np.array(loadings))
+                self.rotated_loadings[f] = pd.DataFrame(
+                    data=rotated_loadings, 
+                    columns=[f"RC{i+1}" for i in range(n_retained)], 
+                    index=list(X_splited.columns)
+                )
+                self.rotated_components[f] = rotated_loadings @ np.diag(1 / np.sqrt(eigenvalues))
+                
         return self
 
     def transform(self, X):
         '''
-        Transform the input data using the fitted PCA models.
+        <Return> a dataframe containing the transformed features.
         '''
-        pca_names, pca_values = [], []
+        component_names, component_values = [], []
 
+        ## For each category, transform the input data using the fitted reducer model
         for f, feature_list in self.categorized_features.items():
-            X_splited = X.loc[:, feature_list]
-            pca = self.fitted_pcas[f]
-            X_transformed = pca.transform(X_splited)
+            selected_features = [ f for f in feature_list if f not in self.dropped_features ]
+            X_splited = X.loc[:, selected_features].to_numpy()
+            pca = self.fitted_pca[f]
+            X_centered = X_splited - pca.mean_
 
-            for i in range(X_transformed.shape[1]):
-                pca_names.append(f"{f}_PC{i+1}")
-                pca_values.append(X_transformed[:, i])
+            if f in self.rotated_components.keys():
+                X_transformed = X_centered @ self.rotated_components[f]
+                for i in range(X_transformed.shape[1]):
+                    component_names.append(f"{f}_RC{i+1}")
+                    component_values.append(X_transformed[:, i])
+            else:
+                X_transformed = X_centered @ pca.components_.T
+                for i in range(X_transformed.shape[1]):
+                    component_names.append(f"{f}_PC{i+1}")
+                    component_values.append(X_transformed[:, i])
 
-        return pd.DataFrame(data=np.column_stack(pca_values), columns=pca_names)
+        return pd.DataFrame(
+            data=np.column_stack(component_values), 
+            columns=component_names, 
+            index=X.index
+        )
     
     def _categorize_features(self, included_features):
         '''
-        Categorize features based on knowledge.
+        Knowledge-based categorization of features.
         '''
         categorized_features = {}
-    
+        lower_categorized_GM = { k.lower(): v for k, v in self._categorized_GM_regions().items() }
+        
         for feature in included_features:
             if feature.startswith("STRUCTURE"):
                 category, hemi, area, measure = feature.split("_")[3::]
                 if category == "NULL":
                     f = f"STR_{category}_{measure}"
                 else:
-                    f = f"STR_{category}_{hemi[0]}_{measure}"
-                
+                    if (category == "GM") and (measure != "FA"): 
+                        region = lower_categorized_GM[area.lower()]
+
+                        if region == "I-C":
+                            f = f"STR_{category}_{region}_{measure}"
+                        else:
+                            f = f"STR_{category}_{hemi[0]}_{region}_{measure}"
+                    else:
+                        f = f"STR_{category}_{hemi[0]}_{measure}"
             else:
                 domain, task, measure, condition = feature.split("_")[:4]
                 measure = "fMRI" if measure == "MRI" else measure                
@@ -315,7 +388,7 @@ class PCAEncoder:
                     f = f"{measure}_{domain.lower()}"
                     
                 elif (measure == "EEG") and (task == "OSPAN") and ("Diff" in condition):
-                    f = f"{measure}_{domain.lower()}_{task.lower()} diff)"
+                    f = f"{measure}_{domain.lower()}_{task.lower()}-diff"
 
                 elif (measure == "EEG") and (task == "GOFITTS"):
                     suffix = re.sub(r"[0-9]+", "", condition).replace("ID", "").replace("W", "").replace("Slope", "-slope")
@@ -331,7 +404,95 @@ class PCAEncoder:
         
         return categorized_features
 
+    def _categorized_GM_regions(self):
+        return {
+            "GySulFrontoMargin": "F-T", # Fronto-marginal gyrus (of Wernicke) and sulcus
+            "GySulSubCentral": "F-T", # Subcentral gyrus (central operculum) and sulci
+            "GySulTransvFrontopol": "F-T", # Transverse frontopolar gyri and sulci
+            "GyFrontInfOpercular": "F-T", # Opercular part of the inferior frontal gyrus
+            "GyFrontInfObital": "F-T", # Orbital part of the inferior frontal gyrus
+            "GyFrontInfTriangul": "F-T", # Triangular part of the inferior frontal gyrus
+            "GyFrontMiddle": "F-T", # Middle frontal gyrus (F2)
+            "GyFrontSup": "F-T", # Superior frontal gyrus (F1)
+            "GyOrbital": "F-T", # Orbital gyri
+            "GyRectus": "F-T", # Straight gyrus, Gyrus rectus
+            "LateralFisAnterorHorizont": "F-T", # Horizontal ramus of the anterior segment of the lateral sulcus (or fissure)
+            "LateralFisAnterorVertical": "F-T", # Vertical ramus of the anterior segment of the lateral sulcus (or fissure)
+            "LateralFisPost": "F-T", # Posterior ramus (or segment) of the lateral sulcus (or fissure)
+            "SulFrontInferior": "F-T", # Inferior frontal sulcus
+            "SulFrontMiddle": "F-T", # Middle frontal sulcus
+            "SulFrontSuperior": "F-T", # Superior frontal sulcus
+            "SulOrbitalLateral": "F-T", # Lateral orbital sulcus
+            "SulOrbitalMedialOlfact": "F-T", # Medial orbital sulcus (olfactory sulcus)
+            "SulOrbitalHshaped": "F-T", # Orbital sulci (H-shaped sulci)
+            "SulSubOrbital": "F-T", # Suborbital sulcus (sulcus rostrales, supraorbital sulcus)
+            "GyOccipitalTemporalLateralFusifor": "F-T", # Lateral occipito-temporal gyrus (fusiform gyrus, O4-T4)
+            "GyOccipitalTemporalMedialParahip": "F-T", # Parahippocampal gyrus, parahippocampal part of the medial occipito-temporal gyrus, (T5)
+            "GyTemporalSuperiorGyTemporalTransv": "F-T", # Anterior transverse temporal gyrus (of Heschl)
+            "GyTemporalSuperiorLateral": "F-T", # Lateral aspect of the superior temporal gyrus
+            "GyTemporalSuperiorPlanPolar": "F-T", # Planum polare of the superior temporal gyrus
+            "GyTemporalSuperiorPlanTempo": "F-T", # Planum temporale or temporal plane of the superior temporal gyrus
+            "GyTemporalInferior": "F-T", # Inferior temporal gyrus (T3)
+            "GyTemporalMiddle": "F-T", # Middle temporal gyrus (T2)
+            "PoleTemporal": "F-T", # Temporal pole
+            "SulOccipitalTemporalLateral": "F-T", # Lateral occipito-temporal sulcus
+            "SulOccipitalTemporalMedialAndLingual": "F-T", # Medial occipito-temporal sulcus (collateral sulcus) and lingual sulcus
+            "SulTemporalInferior": "F-T", # Inferior temporal sulcus
+            "SulTemporalSuperior": "F-T", # Superior temporal sulcus (parallel sulcus)
+            "SulTemporalTransverse": "F-T", # Transverse temporal sulcus
+            "GySulCingulAnt": "I-C", # Anterior part of the cingulate gyrus and sulcus (ACC)
+            "GySulCingulMidAnt": "I-C", # Middle-anterior part of the cingulate gyrus and sulcus (aMCC)
+            "GySulCingulMidPost": "I-C", # Middle-posterior part of the cingulate gyrus and sulcus (pMCC)
+            "GyCingulPostDorsal": "I-C", # Posterior-dorsal part of the cingulate gyrus (dPCC)
+            "GyCingulPostVentral": "I-C", # Posterior-ventral part of the cingulate gyrus (vPCC, isthmus of the cingulate gyrus)
+            "GyInsularLongSulCentralInsular": "I-C", # Long insular gyrus and central sulcus of the insula
+            "GyInsularShort": "I-C", # Short insular gyri
+            "GySubcallosal": "I-C", # Subcallosal area, subcallosal gyrus
+            "SulCircularInsulaAnteror": "I-C", # Anterior segment of the circular sulcus of the insula
+            "SulCircularInsulaInferior": "I-C", # Inferior segment of the circular sulcus of the insula
+            "SulCircularInsulaSuperoir": "I-C", # Superior segment of the circular sulcus of the insula
+            "SulPericallosal": "I-C", # Pericallosal sulcus (S of corpus callosum)
+            "GySulOccipitalInf": "P-O", # Inferior occipital gyrus (O3) and sulcus
+            "GyCuneus": "P-O", # Cuneus (O6)
+            "GyOccipitalMiddle": "P-O", # Middle occipital gyrus (O2, lateral occipital gyrus)
+            "GyOccipitalSup": "P-O", # Superior occipital gyrus (O1)
+            "GyOccipitalTemporalMedialLingual": "P-O", # Lingual gyrus, ligual part of the medial occipito-temporal gyrus, (O5)
+            "PoleOccipital": "P-O", # Occipital pole
+            "SulCalcarine": "P-O", # Calcarine sulcus
+            "SulCollatTransvAnterior": "P-O", # Anterior transverse collateral sulcus
+            "SulCollatTransvPosterior": "P-O", # Posterior transverse collateral sulcus
+            "SulOccipitalMiddleAndLunatus": "P-O", # Middle occipital sulcus and lunatus sulcus
+            "SulOccipitalSuperiorAndTransversal": "P-O", # Superior occipital sulcus and transverse occipital sulcus
+            "SulOccipitalAnterior": "P-O", # Anterior occipital sulcus and preoccipital notch (temporo-occipital incisure)
+            "SulParietoOccipital": "P-O", # Parieto-occipital sulcus (or fissure)
+            "GySulParaCentral": "P-O", # Paracentral lobule and sulcus
+            "GyParietalInfAngular": "P-O", # Angular gyrus
+            "GyParietalInfSupramar": "P-O", # Supramarginal gyrus
+            "GyParietalSuperior": "P-O", # Superior parietal lobule
+            "GyPostCentral": "P-O", # Postcentral gyrus
+            "GyPreCentral": "P-O", # Precentral gyrus
+            "GyPreCuneus": "P-O", # Precuneus (medial part of P1)
+            "SulCentral": "P-O", # Central sulcus (Rolando's fissure)
+            "SulCingulMarginalis": "P-O", # Marginal branch (or part) of the cingulate sulcus
+            "SulIntermPrimJensen": "P-O", # Sulcus intermedius primus (of Jensen)
+            "SulIntraParietAndParietalTrans": "P-O", # Intraparietal sulcus (interparietal sulcus) and transverse parietal sulci
+            "SulPostCentral": "P-O", # Postcentral sulcus
+            "SulPreCentralInferiorPart": "P-O", # Inferior part of the precentral sulcus
+            "SulPreCentralSuperiorPart": "P-O", # Superior part of the precentral sulcus
+            "SulSubParietal": "P-O" # Subparietal sulcus
+        }
+    
+    def _remove_highly_correlated_features(self, X, threshold=0.9):
+        corr_matrix = X.corr().abs()
+        upper_cormat = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
+        to_drop = [ column for column in upper_cormat.columns if any(upper_cormat[column] > threshold) ]
+        return X.drop(columns=to_drop), to_drop
+
     def _parallel_analysis(self, X):
+        '''
+        # see: https://stackoverflow.com/questions/62303782/is-there-a-way-to-conduct-a-parallel-analysis-in-python
+        # and: https://www.statstodo.com/ParallelAnalysis.php
+        '''
         n_features = X.shape[1]
         pca = PCA(n_components=n_features, random_state=self.seed)
         eigv_raw = pca.fit(X).explained_variance_ratio_
@@ -576,6 +737,7 @@ def save_description(args, config, constants, age_bin_labels, pad_age_groups):
             # "FSThresholdMethod": config.fs_thresh_method,
             # "MaxFeatureNum": args.max_feature_num, 
             "FeatureReductionMethod": "PCA" if not args.no_pca else "None",
+            "RemoveHighlyCorrelatedFeatures": args.remove_highly_correlated_features, 
             "IncludedOptimizationModels": included_models, 
             "SkippedIterationNum": args.ignore,  
             "AgeCorrectionMethod": config.age_correction_method, 
@@ -591,9 +753,10 @@ def save_description(args, config, constants, age_bin_labels, pad_age_groups):
 
     return desc
     
-def load_and_merge_datasets(data_file_path, inclusion_file_path):
+def load_and_modify_data(data_file_path, inclusion_file_path):
     '''
-    Read the data and inclusion table, and merge them.
+    Read the data and inclusion table, merge them to apply inclusion criteria, 
+    and perform some modifications.
     '''
     DF = pd.read_csv(data_file_path)
     DF.rename(columns={"BASIC_INFO_ID": "ID"}, inplace=True) # ensure consistent ID column name
@@ -603,6 +766,61 @@ def load_and_merge_datasets(data_file_path, inclusion_file_path):
 
     DF = pd.merge(DF, inclusion_df[["ID"]], on="ID", how='inner') # apply inclusion criteria
     
+    ## Drop columns based on knowledge: 
+    DF.drop(columns=[
+        col for col in DF.columns 
+        if ( "RESTING" in col )
+        or ( col.startswith("LANGUAGE_SPEECHCOMP_BEH") and col.endswith("RT") )
+        or ( col.startswith("MOTOR_GOFITTS_EEG") and (("Diff" in col) or ("Slope" in col)) )
+        or ( col.startswith("MEMORY_EXCLUSION_BEH") and any( kw in col for kw in ["TarMiss", "NewFA", "NonTarFA_PROPORTION", "C2NonTarFA_RT", "C3NonTarFA_RT", "C1NewCR_PROPORTION", "C1NewCR_RTvar"] ) )
+        or ( col.startswith("MEMORY_EXCLUSION_EEG") and any( kw in col for kw in ["TarHitNewCRdiff", "NonTarCRNewCRdiff"] ) )
+        or ( col.startswith("MEMORY_OSPAN_EEG") and any( kw in col for kw in ["150To350", "AMPLITUDE"] ) )
+        or ( col.startswith("MEMORY_MST_MRI") and any( kw in col for kw in ["OldCorSimCorDiff", "OldCorNewCorDiff", "SimCorNewCorDiff", "MD"] ) )
+    ], inplace=True)
+
+    DF.drop(columns=[
+        "MEMORY_OSPAN_EEG_MathItem01_PZ_250To450_4To8_POWER", 
+        "MEMORY_OSPAN_EEG_MathItem23_PZ_250To450_4To8_POWER", 
+        "MEMORY_OSPAN_EEG_MathItem456_PZ_250To450_4To8_POWER", 
+        "MEMORY_OSPAN_EEG_MathItem01_PZ_400To600_4To8_POWER", 
+        "MEMORY_OSPAN_EEG_MathItem23_PZ_400To600_4To8_POWER", 
+        "MEMORY_OSPAN_EEG_MathItem456_PZ_400To600_4To8_POWER", 
+        "MEMORY_OSPAN_EEG_MathItem01_O1_600To800_4To8_POWER", 
+        "MEMORY_OSPAN_EEG_MathItem23_O1_600To800_4To8_POWER", 
+        "MEMORY_OSPAN_EEG_MathItem456_O1_600To800_4To8_POWER", 
+        "MEMORY_OSPAN_EEG_MathItem01_O2_600To800_4To8_POWER", 
+        "MEMORY_OSPAN_EEG_MathItem23_O2_600To800_4To8_POWER", 
+        "MEMORY_OSPAN_EEG_MathItem456_O2_600To800_4To8_POWER", 
+        "MEMORY_OSPAN_EEG_MathItem01_OZ_600To800_4To8_POWER", 
+        "MEMORY_OSPAN_EEG_MathItem23_OZ_600To800_4To8_POWER", 
+        "MEMORY_OSPAN_EEG_MathItem456_OZ_600To800_4To8_POWER", 
+        "MEMORY_OSPAN_EEG_MathItem01_PZ_600To800_4To8_POWER", 
+        "MEMORY_OSPAN_EEG_MathItem23_PZ_600To800_4To8_POWER", 
+        "MEMORY_OSPAN_EEG_MathItem456_PZ_600To800_4To8_POWER", 
+        "MEMORY_OSPAN_EEG_MathItem2301Diff_O1_600To800_4To8_POWER", 
+        "MEMORY_OSPAN_EEG_MathItem2301Diff_O2_600To800_4To8_POWER", 
+        "MEMORY_OSPAN_EEG_MathItem2301Diff_OZ_600To800_4To8_POWER", 
+        "MEMORY_OSPAN_EEG_MathItem45601Diff_O1_600To800_4To8_POWER", 
+        "MEMORY_OSPAN_EEG_MathItem45601Diff_O2_600To800_4To8_POWER", 
+        "MEMORY_OSPAN_EEG_MathItem01_PZ_1200To1400_20To25_POWER", 
+        "MEMORY_OSPAN_EEG_MathItem23_PZ_1200To1400_20To25_POWER", 
+        "MEMORY_OSPAN_EEG_MathItem456_PZ_1200To1400_20To25_POWER"
+    ], inplace=True)
+
+    ## Calculate mean of HighForce and LowForce columns:
+    for col in DF.columns:
+        if re.match(r"MOTOR_GFORCE_MRI_.*?HighForce_.*?H_.*?_[a-zA-Z]+", col):
+            pair = col.replace("High", "Low")
+            DF.insert(
+                DF.columns.get_loc(col), 
+                col.replace("High", "Mean"), 
+                DF[[col, pair]].mean(axis=1)
+            )
+            DF.drop(
+                columns=[col, pair], 
+                inplace=True
+            )
+
     return DF
 
 def make_balanced_dataset(DF, balancing_method, age_bin_dict, n_per_balanced_g, seed):
@@ -720,7 +938,7 @@ def preprocess_grouped_dataset(X, y, ids, split_with_ids, testset_ratio, trained
     - (dict): A dictionary of train-test splited data, storing 
               the standardized feature values, age, and ID numbers of participants.
     '''
-    ## Remove features with too many missing values:
+    ## Remove features (data columns) with too many missing observations:
     n_subjs = len(X)
     na_rates = pd.Series(X.isnull().sum() / n_subjs)
     Q1 = na_rates.quantile(.25)
@@ -735,7 +953,7 @@ def preprocess_grouped_dataset(X, y, ids, split_with_ids, testset_ratio, trained
     
     ## Split into training and testing sets, and then apply feature scaling:
     if trained_scaler is None:
-        scaler = StandardScaler() # MinMaxScaler()
+        scaler = StandardScaler() # data needs to be standardized before PCA; replace MinMaxScaler(), to ensure the mean is zero 
 
     if testset_ratio == 0: # no testing set, use the whole dataset for training
         X_train, y_train, id_train = X_imputed, y, ids
@@ -748,11 +966,10 @@ def preprocess_grouped_dataset(X, y, ids, split_with_ids, testset_ratio, trained
 
     else: 
         if split_with_ids is not None: # split the dataset based on pre-defined IDs
-            id_train, id_test = split_with_ids["Train"], split_with_ids["Test"]
-            X_train = X_imputed[ids.isin(id_train)]
-            X_test = X_imputed[ids.isin(id_test)]
-            y_train = y[ids.isin(id_train)]
-            y_test = y[ids.isin(id_test)]
+            idx_train, idx_test = ids.isin(split_with_ids["Train"]), ids.isin(split_with_ids["Test"])
+            id_train, id_test = ids[idx_train], ids[idx_test]
+            X_train, X_test = X_imputed[idx_train], X_imputed[idx_test]
+            y_train, y_test = y[idx_train], y[idx_test]
 
         else: # split the dataset based on the given ratio
             X_train, X_test, y_train, y_test, id_train, id_test = train_test_split(
@@ -770,8 +987,8 @@ def preprocess_grouped_dataset(X, y, ids, split_with_ids, testset_ratio, trained
         "X_test": X_test_scaled, 
         "y_train": y_train, 
         "y_test": y_test, 
-        "id_train": id_train.tolist() if isinstance(id_train, pd.Series) else id_train, # id_train.reset_index(drop=True), 
-        "id_test": id_test.tolist() if isinstance(id_test, pd.Series) else id_test, # id_test.reset_index(drop=True), 
+        "id_train": id_train.tolist() if isinstance(id_train, pd.Series) else id_train, 
+        "id_test": id_test.tolist() if isinstance(id_test, pd.Series) else id_test, 
         "scaler": scaler if trained_scaler is None else trained_scaler
     }
 
@@ -974,7 +1191,7 @@ def train_and_evaluate(X, y, # fs_method, thresh_method, max_feature_num,
         )
         logging.info("Parameter optimization is completed :-)")
 
-        ## Refit the model with the best hyperparameters found:
+        ## Train and evaluate the model across 5-fold CV:
         logging.info("Evaluating the model with the best hyperparameters ...")
         best_params = study.best_params
         # best_params.update({
@@ -999,8 +1216,10 @@ def train_and_evaluate(X, y, # fs_method, thresh_method, max_feature_num,
 
         if hasattr(trained_model, "coef_"):
             feature_importance = pd.Series(trained_model.coef_, index=X.columns)
+            feature_importance.sort_values(ascending=False, key=abs, inplace=True)
         elif hasattr(trained_model, "feature_importances_"):
             feature_importance = pd.Series(trained_model.feature_importances_, index=X.columns)
+            feature_importance.sort_values(ascending=False, key=abs, inplace=True)
         else:
             feature_importance = None
 
@@ -1092,8 +1311,11 @@ def calc_bias_free_offsets(reg, predicted_ages):
 ## Main: ==============================================================================
 
 def main():
+    ## Parse command line arguments:
+    args = parser.parse_args()
+
     ## Setup config and constants objects:
-    config = Config()
+    config = Config(args)
     constants = Constants()
 
     os.makedirs(config.out_folder) # should not exist
@@ -1157,7 +1379,7 @@ def main():
             
     else: # Load the raw dataset:
         logging.info("Loading the raw dataset and merging it with the inclusion table ...")
-        DF = load_and_merge_datasets(
+        DF = load_and_modify_data(
             data_file_path=config.data_file_path, 
             inclusion_file_path=config.inclusion_file_path
         )
@@ -1286,15 +1508,15 @@ def main():
                             saved_results = json.load(f)
 
                         best_model_name = saved_results["Model"]
+                        selected_features = saved_results["FeatureNames"]
 
                         if not args.no_pca:
-                            pca_outpath = config.pca_outpath_format.format(group_name, ori_name)
-                            with open(pca_outpath, 'rb') as f:
-                                pca = pickle.load(f)
-                            X_train_transformed = pca.transform(data_dict["X_train"])
+                            reducer_path = os.path.join("outputs", args.pretrained_model_folder, os.path.basename(config.reducer_outpath_format.format(group_name, ori_name)))
+                            with open(reducer_path, 'rb') as f:
+                                reducer = pickle.load(f)
+                            X_train_transformed = reducer.transform(data_dict["X_train"])
                         else:
                             raise NotImplementedError("Using PCA is required for now.")
-                            # selected_features = saved_results["FeatureNames"]
                             # X_train_selected = data_dict["X_train"].loc[:, selected_features]
 
                         saved_model = os.path.join("outputs", args.pretrained_model_folder, f"models_{group_name}_{ori_name}_{best_model_name}.pkl")
@@ -1321,7 +1543,6 @@ def main():
                                 col for col in data_dict["X_train"].columns
                                 if any( domain in col for domain in ori_content["domains"] )
                                 and any( app in col for app in ori_content["approaches"] )
-                                and "RESTING" not in col
                             ]
                             if ori_name == "FUNCTIONAL": # exclude "STRUCTURE" features
                                 included_features = [ col for col in included_features if "STRUCTURE" not in col ]
@@ -1337,16 +1558,32 @@ def main():
                                 
                                 if not args.no_pca:
                                     logging.info("Performing dimensionality reduction ...")
-                                    pca = PCAEncoder(seed=config.seed, n_iter=100)
-                                    pca.fit(X=X_train_included)
-                                    X_train_transformed = pca.transform(X=X_train_included)
+                                    reducer = FeatureReducer(seed=config.seed, n_iter=100)
+                                    reducer.fit(X=X_train_included, rhcf=args.remove_highly_correlated_features)
+                                    X_train_transformed = reducer.transform(X=X_train_included)
 
-                                    logging.info("Saving the PCA model ...")
-                                    pca_outpath = config.pca_outpath_format.format(group_name, ori_name)
-                                    with open(pca_outpath, 'wb') as f:
-                                        pickle.dump(pca, f)
+                                    logging.info("Saving the loading matrixs ...")
+                                    pc_xlsx = config.pc_loadings_outpath_format.format(group_name, ori_name)
+                                    with pd.ExcelWriter(pc_xlsx, engine="openpyxl", mode="w") as writer:
+                                        for f in reducer.loadings.keys():
+                                            reducer.loadings[f].to_excel(writer, sheet_name=f)
+                                    
+                                    rc_xlsx = config.rc_loadings_outpath_format.format(group_name, ori_name)
+                                    with pd.ExcelWriter(rc_xlsx, engine="openpyxl", mode="w") as writer:
+                                        for f in reducer.rotated_loadings.keys():
+                                            reducer.rotated_loadings[f].to_excel(writer, sheet_name=f)
+
+                                    logging.info("Saving the feature reducer object ...")
+                                    reducer_path = config.reducer_outpath_format.format(group_name, ori_name)
+                                    with open(reducer_path, 'wb') as f:
+                                        pickle.dump(reducer, f)
+
+                                    logging.info("Saving the dropped features ...")
+                                    with open(config.dropped_features_outpath_format.format(group_name, ori_name), 'w') as f:
+                                        f.write("\n".join(reducer.dropped_features))
+
                                 else:
-                                    raise NotImplementedError("Using PCA is required for now.")
+                                    raise NotImplementedError("Feature reduction is required for now.")
                                 
                                 logging.info("Training and evaluating models ...")
                                 results = train_and_evaluate(
@@ -1464,7 +1701,7 @@ def main():
                         logging.info("Evaluating the best model on the testing set ...")
 
                         if not args.no_pca:
-                            X_test_transformed = pca.transform(data_dict["X_test"])
+                            X_test_transformed = reducer.transform(data_dict["X_test"])
                             y_pred_test = trained_model.predict(X_test_transformed)
                         else:
                             raise NotImplementedError("Using PCA is required for now.")
@@ -1537,5 +1774,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+    print("\nDone!\n")
 
 

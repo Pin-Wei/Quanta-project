@@ -3,6 +3,7 @@
 # python gen_derivatives.py -f FOLDER_NAME 
 
 import os
+import sys
 import json
 import argparse
 import itertools
@@ -94,6 +95,7 @@ class Config:
         self.pad_barplot_filename    = "[bar] PAD values.png"
         self.pad_cormat_fn_template  = f"[cormat] between {self.pad_type} in <GroupName>.png"
         self.pad_scatter_fn_template = f"[scatter] between {self.pad_type} in <GroupName> (<Type1> × <Type2>).png"
+        self.feature_importance_fn_template = "[bar] <OriName> feature importance (<GroupName>).png"
         self.sunburst_fn_template    = "[pie] <FeatureType>.png"
 
 class Constants:
@@ -128,6 +130,10 @@ class ColorDicts:
         self.real_synth = {
             "Real": "#FF9933", 
             "Synthetic": "#3399FF"
+        }
+        self.pred_type = {
+            "Raw": "#00BFFF", 
+            "AC": "#FF1493" # age-corrected
         }
         self.pad_bars = {
             "PAD":    "#219EBC",
@@ -221,9 +227,9 @@ def load_description(config, const, args):
 
     # Generate HTML version of the description:
     generate_html(
-        config, desc_json, config.html_desc_outpath, overwrite=True # args.overwrite
+        config, desc_json, config.html_desc_outpath, overwrite=[True, args.overwrite][1]
     )
-    print("!!! Note: overwrite for this file is set to True temporarily. !!!\n")
+    # print("!!! Note: overwrite for this file is set to True temporarily. !!!")
 
     class Description:
         def __init__(self):
@@ -255,6 +261,9 @@ def load_description(config, const, args):
                 self.data_synthetized = True
             else:
                 self.data_synthetized = False
+
+            ## Whether pre-trained models were used:
+            self.use_pretrained = True if desc_json["UsePretrainedModels"] is not None else False
 
     return Description()
 
@@ -304,6 +313,15 @@ def load_data(config, desc, const, output_path, overwrite=False):
                     results = json.load(f)
 
                     selected_features[ori_name][group_name] = results["FeatureNames"]
+
+                    # ## Debugging:
+                    # for k, v in results.items() :
+                    #     if k in [desc.sid_name] + const.test_result_cols + const.model_info_cols:
+                    #         if isinstance(v, list):
+                    #             print(f"# {k}:\nlist with {len(v)} elements.\n")
+                    #         else:
+                    #             print(f"# {k}:\n{type(v)}, {v}\n")
+                    # sys.exit()
 
                     main_results = pd.DataFrame({ 
                         k: v for k, v in results.items() if k in 
@@ -378,16 +396,16 @@ def plot_age_pred_corr(combined_results_DF, y_lab, color_hue, color_dict,
         fig = plt.figure(figsize=fig_size, dpi=dpi)
         g = sns.scatterplot(
             data=combined_results_DF, x="Age", y=y_lab, 
-            hue=color_hue, palette=color_dict, 
+            hue=color_hue, palette=color_dict, alpha=.7, 
             legend=False
+        )
+        g.set(
+            xlim=(15, 85), ylim=(15, 85), 
+            xticks=np.arange(20, 85, 10), yticks=np.arange(20, 85, 10)
         )
         plt.plot(
             g.get_xlim(), g.get_ylim(), color="k", linewidth=1, linestyle="--"
         )
-        r, p = pearsonr(combined_results_DF["Age"], combined_results_DF[y_lab])
-        p_print = format_p(p)
-        N = len(combined_results_DF)        
-        g.set_title(f"r = {r:.2f}, {p_print}, N = {N:.0f}")
         g.set_xlabel("Real age")
         g.set_ylabel("Predicted age")
         # g.get_legend().set_title("")
@@ -502,13 +520,16 @@ def save_model_info(result_DF, label_cols, desc, output_path, overwrite=False):
         result_DF["Info"] = result_DF.apply(
             lambda x: f"{x['Model']} ({x['NumberOfFeatures']})", axis=1
         )
+        result_DF["Type"] = result_DF["Type"].replace({
+            "STRUCTURE": "STR", "FUNCTIONAL": "FUN"
+        })
         (result_DF
             .loc[:, label_cols + ["Type", "Info"]]
             .drop_duplicates() 
             .pivot(index = label_cols, 
                    columns = "Type", 
                    values = "Info")
-            .loc[:, desc.feature_orientations] # re-order
+            .loc[:, [ ori[:3] for ori in desc.feature_orientations ]] # re-order
             .iloc[::-1] # reverse rows
             .to_csv(output_path)
         )
@@ -774,6 +795,24 @@ def plot_scatter_from_corr(corr_DF, group_name, wide_sub_DF, t1, t2, grouping_co
         plt.close()
         print(f"\nCorrelation plot is saved to:\n{output_path}")
 
+def plot_feature_importances(feature_importances, output_path, 
+                             overwrite=False, fig_size=(6, 20)):
+    '''
+    Plot the feature importances as a bar plot.
+    <no returns>
+    '''
+    if (not os.path.exists(output_path)) or overwrite:
+        sns.set_theme(style='whitegrid')
+        fig, ax = plt.subplots(figsize=fig_size)
+        sns.barplot(
+            x=1, y=0, data=feature_importances
+        )
+        ax.set(xlim=(-1, 1), ylabel="", xlabel="Feature Importances")
+        plt.tight_layout()
+        plt.savefig(output_path)
+        plt.close()
+        print(f"\nFeature importances plot is saved to:\n{output_path}")
+    
 def make_feature_DF(ori_name, feature_list, domain_approach_mapping):
     '''
     Make a DataFrame containing the domain and approach labels for each feature, 
@@ -1039,24 +1078,26 @@ def main():
 
     ## Plot correlation between real and predicted ages:
     for ori_name in desc.feature_orientations: 
-        fp = os.path.join(config.output_folder, config.pred_corr_real_filename.replace(".png", f" ({ori_name[:3]}).png"))
-        
-        for file_path, y_lab in [
-            (fp, "PredictedAge"), 
-            (fp.replace("predicted", "corrected predicted"), "CorrectedPredictedAge")
-        ]:
-            plot_age_pred_corr(
-                combined_results_DF=combined_results_DF.query("Type == @ori_name"), 
-                y_lab=y_lab, 
-                color_hue=["Sex", "TrainTest"][1], 
-                color_dict=[color_dicts.sex, color_dicts.train_test][1], 
-                output_path=file_path,
-                overwrite=args.overwrite
-            )
+        ori_DF_original = combined_results_DF.query("Type == @ori_name").loc[:, ["Age", "PredictedAge"]]
+        ori_DF_original.insert(1, "Type", "Raw")
+        ori_DF_corrected = combined_results_DF.query("Type == @ori_name").loc[:, ["Age", "CorrectedPredictedAge"]]
+        ori_DF_corrected.insert(1, "Type", "AC")
+        ori_DF_corrected.rename(columns={"CorrectedPredictedAge": "PredictedAge"}, inplace=True)
+        ori_DF = pd.concat([ori_DF_original, ori_DF_corrected], axis=0)
+
+        plot_age_pred_corr(
+            combined_results_DF=ori_DF, 
+            y_lab="PredictedAge", 
+            color_hue="Type", 
+            color_dict=color_dicts.pred_type, 
+            output_path=os.path.join(config.output_folder, config.pred_corr_real_filename.replace(".png", f" ({ori_name[:3]}).png")),
+            overwrite=args.overwrite
+        )
+
     plot_color_legend(
-        color_dict=color_dicts.train_test, 
-        output_path=os.path.join(config.output_folder, "[color legend] Train & Test.png"),
-        fig_size=(2, .5), n_cols=2, box_size=0.5, overwrite=args.overwrite
+        color_dict=color_dicts.pred_type, 
+        output_path=os.path.join(config.output_folder, "[color legend] prediction Before & After correction.png"),
+        fig_size=(1.5, .5), n_cols=2, box_size=.5, overwrite=args.overwrite
     )
 
     ## If the data was synthetized, compare real and synthetic data for each group:
@@ -1181,6 +1222,7 @@ def main():
         plot_cormat(
             wide_sub_DF=wide_sub_DF, 
             targ_cols=sorted([ x[:3] for x in desc.feature_orientations ]), 
+            yr=90, 
             output_path=os.path.join(config.output_folder, fn), 
             figsize=(3, 3) if len(desc.feature_orientations) <= 3 else (4, 4),
             overwrite=args.overwrite
@@ -1248,90 +1290,109 @@ def main():
                 overwrite=args.overwrite
             )
 
-    ## Prepare a smaller, non-duplicatie dataframe:
-    model_info_DF = (
-        result_DF.loc[:, desc.label_cols + ["Type", "Model", "NumberOfFeatures"]]
-        .drop_duplicates()
-    )
-
-    ## Make a dataframe with hierachical labels for selected features:
-    feature_DF_list = [] # to concat and save to .csv
-
-    for ori_name in desc.feature_orientations: 
-
-        ## One dataframe per group:
-        feature_DF_dict = {
-            group_name: make_feature_DF(
-                ori_name, feature_list, domain_approach_mapping
-            ) 
-            for group_name, feature_list in selected_features[ori_name].items()
-        }
-
-        for group_name, feature_DF in feature_DF_dict.items(): 
-            feature_df = pd.DataFrame(feature_DF)
-            feature_df.insert(0, "Type", ori_name[:3])
-            feature_df.insert(1, "Group", group_name)
-            feature_DF_list.append(feature_df)
-
-        ## Prepare annotation for each subplot:
-        subplot_annots, fig_titles = {}, {}
-        for label in desc.label_list: 
-            if desc.sep_sex:
-                age_group, sex = label
-                group_name = f"{age_group}_{sex}"
-                model_info = model_info_DF.query(
-                    "Type == @ori_name & AgeGroup == @age_group & Sex == @sex"
+    ## Plot feature importances for each group:
+    if not desc.use_pretrained:
+        for ori_name in desc.feature_orientations: 
+            for group_name in wide_sub_DF_dict.keys():
+                feature_importances = pd.read_csv(
+                    os.path.join(config.input_folder, f"features_{group_name}_{ori_name}.csv"), 
+                    header=None
                 )
-            else:
-                group_name = label
-                model_info = model_info_DF.query(
-                    "Type == @ori_name & AgeGroup == @group_name"
+                feature_importances.sort_values(
+                    by=1, ascending=False, key=abs, inplace=True
                 )
-            model_type = model_info['Model'].iloc[0]
-            n_features = model_info['NumberOfFeatures'].iloc[0]
-            subplot_annots[group_name] = f"{group_name} ({model_type} - {n_features})" 
-            fig_titles[group_name] = f"{model_type} ({n_features})"
+                fw = len(feature_importances) * 0.3
+                plot_feature_importances(
+                    feature_importances=feature_importances, 
+                    output_path=os.path.join(config.output_folder, config.feature_importance_fn_template.replace("<GroupName>", group_name).replace("<OriName>", ori_name[:3])), 
+                    overwrite=args.overwrite, 
+                    fig_size=(8, fw)
+                )
 
-        ## One set of sunburst charts per feature type:
-        fp = os.path.join(config.output_folder, config.sunburst_fn_template.replace("<FeatureType>", ori_name[:3]))
-        plot_many_feature_sunbursts(
-            feature_DF_dict=feature_DF_dict, 
-            color_dict=color_dicts.sunburst[ori_name], 
-            fig_title=f"{ori_name[:3]}", 
-            subplot_annots=subplot_annots, 
-            output_path=fp, 
-            num=True, 
-            overwrite=args.overwrite
-        )
+    # ## Prepare a smaller, non-duplicatie dataframe:
+    # model_info_DF = (
+    #     result_DF.loc[:, desc.label_cols + ["Type", "Model", "NumberOfFeatures"]]
+    #     .drop_duplicates()
+    # )
+
+    # ## Make a dataframe with hierachical labels for selected features:
+    # feature_DF_list = [] # to concat and save to .csv
+
+    # for ori_name in desc.feature_orientations: 
+
+    #     ## One dataframe per group:
+    #     feature_DF_dict = {
+    #         group_name: make_feature_DF(
+    #             ori_name, feature_list, domain_approach_mapping
+    #         ) 
+    #         for group_name, feature_list in selected_features[ori_name].items()
+    #     }
+
+    #     for group_name, feature_DF in feature_DF_dict.items(): 
+    #         feature_df = pd.DataFrame(feature_DF)
+    #         feature_df.insert(0, "Type", ori_name[:3])
+    #         feature_df.insert(1, "Group", group_name)
+    #         feature_DF_list.append(feature_df)
+
+    #     ## Prepare annotation for each subplot:
+    #     subplot_annots, fig_titles = {}, {}
+    #     for label in desc.label_list: 
+    #         if desc.sep_sex:
+    #             age_group, sex = label
+    #             group_name = f"{age_group}_{sex}"
+    #             model_info = model_info_DF.query(
+    #                 "Type == @ori_name & AgeGroup == @age_group & Sex == @sex"
+    #             )
+    #         else:
+    #             group_name = label
+    #             model_info = model_info_DF.query(
+    #                 "Type == @ori_name & AgeGroup == @group_name"
+    #             )
+    #         model_type = model_info['Model'].iloc[0]
+    #         n_features = model_info['NumberOfFeatures'].iloc[0]
+    #         subplot_annots[group_name] = f"{group_name} ({model_type} - {n_features})" 
+    #         fig_titles[group_name] = f"{model_type} ({n_features})"
+
+    #     ## One set of sunburst charts per feature type:
+    #     fp = os.path.join(config.output_folder, config.sunburst_fn_template.replace("<FeatureType>", ori_name[:3]))
+    #     plot_many_feature_sunbursts(
+    #         feature_DF_dict=feature_DF_dict, 
+    #         color_dict=color_dicts.sunburst[ori_name], 
+    #         fig_title=f"{ori_name[:3]}", 
+    #         subplot_annots=subplot_annots, 
+    #         output_path=fp, 
+    #         num=True, 
+    #         overwrite=args.overwrite
+    #     )
         
-        ## One sunburst chart per group:
-        for group_name, feature_DF in feature_DF_dict.items():
-            plot_feature_sunburst(
-                feature_DF=feature_DF, 
-                color_dict=color_dicts.sunburst[ori_name], 
-                fig_title=fig_titles[group_name], 
-                output_path=fp.replace(".png", f" ({group_name}).png"), 
-                num=True, 
-                overwrite=args.overwrite
-            )
+    #     ## One sunburst chart per group:
+    #     for group_name, feature_DF in feature_DF_dict.items():
+    #         plot_feature_sunburst(
+    #             feature_DF=feature_DF, 
+    #             color_dict=color_dicts.sunburst[ori_name], 
+    #             fig_title=fig_titles[group_name], 
+    #             output_path=fp.replace(".png", f" ({group_name}).png"), 
+    #             num=True, 
+    #             overwrite=args.overwrite
+    #         )
 
-    ## Save the feature dataframe:
-    output_path = os.path.join(config.output_folder, config.feature_df_filename)
-    if not os.path.exists(os.path.dirname(output_path)) or args.overwrite:
-        feature_DF_long = pd.concat(feature_DF_list)
-        feature_DF_long.rename(columns={
-            "feature"     : "Feature", 
-            "domain"      : "Level_2", 
-            "domain_num"  : "L2_num", 
-            "approach"    : "Level_1", 
-            "approach_num": "L1_num"
-        }, inplace=True)
-        feature_DF_long = feature_DF_long.loc[:, [
-            "Type", "Group", "Level_1", "L1_num", "Level_2", "L2_num" # , "Feature"
-        ]]
-        feature_DF_long.drop_duplicates(inplace=True)
-        feature_DF_long.to_csv(output_path, index=False)
-        print(f"\nFeature dataframe saved to:\n{output_path}")
+    # ## Save the feature dataframe:
+    # output_path = os.path.join(config.output_folder, config.feature_df_filename)
+    # if not os.path.exists(os.path.dirname(output_path)) or args.overwrite:
+    #     feature_DF_long = pd.concat(feature_DF_list)
+    #     feature_DF_long.rename(columns={
+    #         "feature"     : "Feature", 
+    #         "domain"      : "Level_2", 
+    #         "domain_num"  : "L2_num", 
+    #         "approach"    : "Level_1", 
+    #         "approach_num": "L1_num"
+    #     }, inplace=True)
+    #     feature_DF_long = feature_DF_long.loc[:, [
+    #         "Type", "Group", "Level_1", "L1_num", "Level_2", "L2_num" # , "Feature"
+    #     ]]
+    #     feature_DF_long.drop_duplicates(inplace=True)
+    #     feature_DF_long.to_csv(output_path, index=False)
+    #     print(f"\nFeature dataframe saved to:\n{output_path}")
 
 ## Finally: ---------------------------------------------------------------------------
 
