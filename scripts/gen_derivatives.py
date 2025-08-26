@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 import pingouin as pg
 
-sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
+sys.path.append(os.path.join(os.getcwd(), "..", "src"))
 from plotting import (
     plot_real_pred_age, plot_corr_with_stats, plot_real_syn_data, 
     plot_pad_bars, plot_feature_importances, plot_cormat, plot_feature_sunburst, 
@@ -21,7 +21,7 @@ from utils import basic_Q_features, ST_features, domain_approach_mapping_dict
 
 class Config:
     def __init__(self, args):
-        self.source_path = os.path.dirname(os.path.abspath(__file__), "..")
+        self.source_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
         self.js_code_path = os.path.join(self.source_path, "src", "output_desc_viewer.js")
         self.html_template_path = os.path.join(self.source_path, "src", "output_desc_viewer.html") 
 
@@ -40,13 +40,13 @@ class Config:
         self.pad_cormat_data_outpath    = os.path.join(self.output_folder, "[database] PAD values with interested features.csv")
         self.pad_pairwise_corr_outpath  = os.path.join(self.output_folder, "[table] pairwise correlations between {}.xlsx")
         # self.feature_df_outpath         = os.path.join(self.output_folder, "[table] selected features.csv")
-        self.feature_importance_outpath = os.path.join(self.output_folder, "[bar] {} feature importances ({}).png")
+        self.feature_importance_outpath = os.path.join(self.output_folder, "[bar] {} feature importances ('{}').png")
         self.pred_vs_real_age_outpath   = os.path.join(self.output_folder, "[scatter] predicted vs real age ({}).png")
-        self.real_vs_synth_data_outpath = os.path.join(self.output_folder, "[hist] distributions of real and synthetic data in {}.png")
-        self.feature_cormat_outpath     = os.path.join(self.output_folder, "[cormat] between features in {}'s {} data.png")
+        self.real_vs_synth_data_outpath = os.path.join(self.output_folder, "[hist] distributions of real and synthetic data in '{}'.png")
+        self.feature_cormat_outpath     = os.path.join(self.output_folder, "[cormat] between features of {} data in '{}'.png")
         self.pad_barplot_outpath        = os.path.join(self.output_folder, "[bar] PAD values{}.png")
-        self.pad_cormat_outpath         = os.path.join(self.output_folder, "[cormat] between {} in {}{}.png")
-        self.pad_scatter_outpath        = os.path.join(self.output_folder, "[scatter] between {} in {} ({} × {}).png")
+        self.pad_cormat_outpath         = os.path.join(self.output_folder, "[cormat] between {} in '{}'{}.png")
+        self.pad_scatter_outpath        = os.path.join(self.output_folder, "[scatter] between {} in '{}' ({} × {}).png")
         # self.sunburst_outpath           = os.path.join(self.output_folder, "[pie] {}.png")
         self.pred_type_legend_outpath   = os.path.join(self.output_folder, "[color legend] prediction Before & After correction.png")
         self.pad_type_legend_outpath    = os.path.join(self.output_folder, "[color legend] PAD & PAD_ac.png")
@@ -72,6 +72,10 @@ class Constants:
         
 class Description:
     def __init__(self, desc_json, const, args):
+        # for k, v in desc_json.items():
+        #     snake_k = re.sub(r"(?<=[a-z])(?=[A-Z])", "_", k).lower() # add underscores before capital letters that follow lowercase letters
+        #     setattr(self, snake_k, v)
+
         self.age_group_labels = desc_json["AgeGroups"]
         self.age_breaks = (
             [ 0 ] + [ int(x.split("-")[1]) for x in self.age_group_labels[:-1] ] + [ np.inf ]
@@ -200,8 +204,10 @@ def define_arguments():
     )
     parser.add_argument("-f", "--folder", type=str, required=True, 
                         help="The folder name of the model outputs.")
-    parser.add_argument("-pad", "--use_pad", action="store_true", default=False,
-                        help="Use PAD values that have not been corrected for age.")
+    parser.add_argument("-padac", "--use_padac", action="store_true", default=False,
+                        help="Use age-corrected PAD values for correlation analysis.")
+    # parser.add_argument("-pad", "--use_pad", action="store_true", default=False,
+                        # help="Use PAD values that have not been corrected for age.")
     parser.add_argument("-ia", "--ignore_all", action="store_true", default=False,
                         help="Ignore 'All' feature orientations.")
     parser.add_argument("-o", "--overwrite", action="store_true", default=False, 
@@ -267,6 +273,8 @@ def load_model_results(config, desc, const, output_path, overwrite=False):
         else:
             processed_results.insert(2, "AgeGroup", label) # should be age group
 
+        return processed_results
+
     def _combine_train_test_results(train_results_DF, result_DF):
         train_results_DF.rename(columns={
             "TrainingAge"       : "Age", 
@@ -288,7 +296,7 @@ def load_model_results(config, desc, const, output_path, overwrite=False):
     selected_features = { o: {} for o in desc.feature_oris }
 
     for label in desc.label_list:
-        group_name = "_".join(label)
+        group_name = "_".join(label) if desc.sep_sex else label
 
         for ori_name in desc.feature_orientations:
             result_path = config.result_path.format(group_name, ori_name)
@@ -299,14 +307,14 @@ def load_model_results(config, desc, const, output_path, overwrite=False):
                     results = json.load(f)
 
                 main_cols = [desc.sid_name] + const.test_result_cols + const.model_info_cols
-                main_results_list.append(_process_results(
-                    results, main_cols, label, ori_name
-                ))
+                main_results = _process_results(results, main_cols, label, ori_name)
+                main_results_list.append(main_results)
+
                 if desc.traintest:
-                    train_results_list.append(_process_results(
-                        results, const.train_result_cols, label, ori_name
-                    ))
-                selected_features[ori_name][group_name] = results["FeatureNames"]
+                    train_results = _process_results(results, const.train_result_cols, label, ori_name)
+                    train_results_list.append(train_results)
+
+                selected_features[ori_name[:3]][group_name] = results["FeatureNames"]
 
     result_DF = pd.concat(main_results_list, ignore_index=True)
     result_DF.insert(1, "SID", result_DF[desc.sid_name].map(lambda x: x.replace("sub-0", "")))
@@ -395,7 +403,7 @@ def make_grouped_result_DF(DF, desc, pad_type):
     grouped_result_DF = {}
 
     for label in desc.label_list: 
-        group_name = "_".join(label)
+        group_name = "_".join(label) if desc.sep_sex else label
         if desc.sep_sex:
             sub_df = DF.query("AgeSex == @group_name")
         else:
@@ -417,12 +425,15 @@ def calc_pairwise_corr(DF_dict, targ_cols, desc, output_path,
     Calculate pairwise correlation between target features for each group 
     and save to an Excel file.
     '''
-    if os.path.exists(output_path) and overwrite:
-        os.remove(output_path)
+    if os.path.exists(output_path):
+        if overwrite:
+            os.remove(output_path)
+        else:
+            creating = False
 
     pw_corr_list = []
-    for group_name, DF in DF_dict:
-        if not os.path.exists(output_path) or overwrite:
+    for group_name, DF in DF_dict.items():
+        if creating:
             pw_corr = (
                 pg.pairwise_corr(DF.loc[:, targ_cols], padjust=p_adj)
                 .sort_values(by=sort_by)[output_cols]
@@ -433,7 +444,6 @@ def calc_pairwise_corr(DF_dict, targ_cols, desc, output_path,
                 with pd.ExcelWriter(output_path, mode='a') as writer: 
                     pw_corr.to_excel(writer, sheet_name=group_name, index=False)
         else:
-            creating = False
             pw_corr = pd.read_excel(output_path, sheet_name=group_name)
 
         pw_corr.insert(0, desc.grouping_col, group_name)
@@ -547,7 +557,7 @@ def main():
     st_features = ST_features()
     domain_approach_mapping = domain_approach_mapping_dict()
 
-    pad_type = "PAD" if args.use_pad else "PAD_ac"
+    pad_type = "PAD_ac" if args.use_padac else "PAD"
     suffix = " (ignore 'All')" if args.ignore_all else ""
 
     ## Load the data matrix that is used to train the models:
@@ -567,12 +577,14 @@ def main():
         output_path=config.model_infos_outpath,
         overwrite=args.overwrite
     )    
+
     save_subj_infos(
         DF=result_DF, 
         desc=desc, 
         output_path=config.subj_infos_outpath.format(""),
         overwrite=args.overwrite
     )
+
     if desc.traintest:
         save_subj_infos(
             DF=combined_results_DF.query("TrainTest == 'Train'"), 
@@ -585,7 +597,7 @@ def main():
     if not desc.use_pretrained: 
         for ori_name in desc.feature_orientations: 
             for label in desc.label_list: 
-                group_name = "_".join(label)
+                group_name = "_".join(label)if desc.sep_sex else label
                 feature_importances = pd.read_csv(
                     config.feature_path.format(group_name, ori_name), header=None
                 )
@@ -625,7 +637,7 @@ def main():
     ## If the data was synthetized, compare real and synthetic data for each group:
     if desc.data_synthetized: 
         for label in desc.label_list: 
-            group_name = "_".join(label)
+            group_name = "_".join(label) if desc.sep_sex else label
 
             if desc.sep_sex:
                 age_group, sex = label
@@ -660,7 +672,7 @@ def main():
                     targ_cols=targeted_features, 
                     shorter_xcol_names=True, 
                     figsize=(12, 4), 
-                    output_path=config.feature_cormat_outpath.format(group_name, S_or_R), 
+                    output_path=config.feature_cormat_outpath.format(S_or_R, group_name), 
                     overwrite=args.overwrite
                 )
 
@@ -675,7 +687,8 @@ def main():
         color_dict = color_dicts.pad_bars, 
         output_path=config.pad_barplot_outpath.format(suffix), 
         overwrite=args.overwrite
-    )    
+    )
+
     for ori_name in desc.feature_oris: 
         plot_pad_bars(
             DF=long_result_DF.query("Type == @ori_name").copy(deep=True), 
@@ -683,7 +696,7 @@ def main():
             one_or_many="one", 
             color_dict = color_dicts.pad_bars, 
             output_path=config.pad_barplot_outpath.format(f" ({ori_name})"), 
-            y_lim=const.pad_bar_y_lims[ori_name],
+            y_max=const.pad_bar_y_lims[ori_name],
             overwrite=args.overwrite
         )
 
@@ -698,7 +711,7 @@ def main():
     pad_with_interested_features = []
 
     for label in desc.label_list:
-        group_name = "_".join(label)
+        group_name = "_".join(label) if desc.sep_sex else label
         sub_result_df = grouped_result_DF[group_name]
         sub_result_df = sub_result_df.merge(
             data_DF.loc[:, ["SID"] + basic_q_features + st_features], 
@@ -761,7 +774,8 @@ def main():
                 DF=sub_DF, 
                 corr_table=corr_table, 
                 x_lab=t1, 
-                y_lab=t2,
+                y_lab=t2, 
+                p_apply="p-corr" if args.p_adjust else "p-unc", 
                 output_path=config.pad_scatter_outpath.format(pad_type, group_name, t1, t2), 
                 overwrite=args.overwrite
             )

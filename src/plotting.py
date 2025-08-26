@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import pingouin as pg
 from scipy.stats import pearsonr, entropy 
+from statsmodels.stats.multitest import fdrcorrection
 
 import seaborn as sns
 import matplotlib.pyplot as plt
@@ -194,8 +195,8 @@ def plot_pad_bars(DF, x_lab, one_or_many, color_dict, output_path,
             g.refline(y=mean_padac, color=color_dict[padac_name], linestyle='--')
             g.refline(y=mean_pad, color=color_dict[pad_name], linestyle='--')
             text = f"mean PAD = {mean_pad:.2f}, PAD_ac = {mean_padac:.2f}"
-            g.text(0.5, 0.1, text, ha='center', va='top', fontsize=22, color="#FF006E")
-            # g.suptitle(text, fontsize=20)
+            g.fig.text(0.5, 0.1, text, ha='center', va='top', fontsize=22, color="#FF006E")
+            # g.fig.suptitle(text, fontsize=20)
             ax = g.axes.flat[0]
             ax.tick_params(axis='x', labelsize=20)
             plt.subplots_adjust(bottom=0.2)
@@ -204,6 +205,87 @@ def plot_pad_bars(DF, x_lab, one_or_many, color_dict, output_path,
         plt.close()
         print(f"\nBar plot of the PAD values is saved to:\n{output_path}")
         
+def plot_categorical_bars(DF, pad_col, version_list, color_dict, 
+                          x_lab="Group", col_lab="Version"):
+    '''
+    Draw the PAD (or PAD_ac) values between different versions.
+    '''
+    sns.set_theme(style="whitegrid")
+    sns.set_context("talk", font_scale=1.2)
+    g = sns.catplot(
+        data=DF, x=x_lab, y=pad_col, kind="bar", errorbar="se", sharex=False, 
+        col=col_lab, col_order=version_list,
+        hue=col_lab, hue_order=version_list, palette=color_dict, 
+        height=5, aspect=.6, alpha=.8, legend=None
+    )
+    for col_val, ax in g.axes_dict.items():
+        pad_mean = DF[DF[col_lab] == col_val][pad_col].mean()
+        ax.axhline(
+            y=pad_mean, color=color_dict[col_val], linestyle='--'
+        )
+        x_pos = ax.get_xaxis().get_majorticklocs()
+        ax.text(
+            x=(x_pos[0] + x_pos[-1]) / 2, 
+            y=ax.get_ylim()[1] + .1, 
+            s=f"mean = {pad_mean:.2f}", 
+            ha="center", va="bottom", color="k", fontsize=24
+        )
+        ax.set_title("")
+        ax.tick_params(axis="both", which="major", labelsize=20)
+    g.set_xlabels("")
+    g.set_ylabels("")
+
+    return g
+
+def plot_bars_with_stats(result_DF, stats_DF, pad_col, version_list, color_dict, 
+                         x_lab="Version", potential_y_lim=None, print_p=False, fig_size=(6, 5)):
+    '''
+    Draw bar plots and significance markers
+    to compare the PAD (or PAD_ac) values between different versions.
+    '''
+    y_pos = max([stats_DF["V1_mean"].max(), stats_DF["V2_mean"].max()])
+    y_offset = max([y_pos, potential_y_lim]) * .2
+    p_offset = max([y_pos, potential_y_lim]) * .05
+    sns.set_theme(style="whitegrid")
+    sns.set_context("talk", font_scale=1.2)
+    plt.figure(figsize=fig_size)
+    g = sns.barplot(
+        data=result_DF, x=x_lab, y=pad_col, order=version_list, 
+        hue=x_lab, hue_order=version_list, palette=color_dict, 
+    )
+    for x1, x2 in itertools.combinations(range(len(version_list)), 2):
+        x_pos_1 = g.get_xaxis().get_majorticklocs()[x1]
+        x_pos_2 = g.get_xaxis().get_majorticklocs()[x2]
+        v1, v2 = version_list[x1], version_list[x2]
+        stats_res = stats_DF.query(f"V1 == '{v1}' & V2 == '{v2}'")
+        if len(stats_res) == 0:
+            stats_res = stats_DF.query(f"V1 == '{v2}' & V2 == '{v1}'")
+        p_val = stats_res.iloc[0]["P_value"]
+        if p_val < .05:
+            y_pos += y_offset
+            g.plot(
+                [x_pos_1, x_pos_2], [y_pos, y_pos], color="k", lw=1.5
+            )
+            p_sig = stats_res.iloc[0]["P_sig"]
+            if print_p:
+                p_sig = "< .001 ***" if p_val < .001 else f"{p_val:.3f} {p_sig}"
+                y_pos += p_offset 
+            else:
+                y_pos -= p_offset
+            g.text(
+                (x_pos_1 + x_pos_2) / 2, y_pos, p_sig, 
+                ha="center", va="bottom", fontsize=24, fontdict={"style": "italic"}
+            )
+    g.spines["right"].set_visible(False)
+    g.spines["top"].set_visible(False)
+    g.set_xlabel("")
+    g.set_ylabel("")
+    g.set_xticks(g.get_xaxis().get_majorticklocs())
+    g.set_xticklabels([ f"#{i+1}" for i in range(len(version_list))], fontsize=20)
+    g.tick_params(axis="y", which="major", labelsize=20)
+
+    return g
+
 def plot_feature_importances(feature_importances, output_path, 
                              x_lim=(-1, 1), fig_size=(6, 20), overwrite=False):
     '''
@@ -223,26 +305,21 @@ def plot_feature_importances(feature_importances, output_path,
 
 ## heatmap ----------------------------------------------------------------------------
 
-def plot_cormat(DF, targ_cols, output_path, 
+def plot_cormat(DF, targ_cols, output_path, fdr=0.05, 
                 corrwith_cols=None, xr=0, yr=0, c_bar=False, 
                 x_col_names=None, y_col_names=None, shorter_xcol_names=False, 
                 font_scale=1.1, figsize=(3, 3), dpi=200, overwrite=False):
     '''
     Compute correlation matrix and plot it as a heatmap.
     '''
-    def _format_r(x, y):
-        if np.std(x) == 0 or np.std(y) == 0:
-            return "N/A"
-        else:
-            r, p = pearsonr(x, y, alternative='two-sided')
-            if p < .001:
-                return f"{r:.2f}***"
-            elif p < .01:
-                return f"{r:.2f}**"
-            elif p < .05:
-                return f"{r:.2f}*"
-            else:
-                return f"{r:.2f}"
+    def _create_annot_mat(cormat, p_stacked, fdr=fdr):
+        q_vals = fdrcorrection(p_stacked.dropna().values, alpha=fdr)[1]
+        q_stacked = pd.Series(q_vals, index=p_stacked.index)
+        q_mat = q_stacked.unstack()
+        q_sig = q_mat.map(lambda x: "*" * sum( x <= t for t in [0.05, 0.01, 0.001] ))
+        annot_mat = cormat.map(lambda x: f"{x:.2f}") + q_sig
+        # annot_mat = cormat.round(2).astype(str) + q_sig
+        return annot_mat.fillna("N/A")
             
     def _rename_labels(col_names):
         renamed_labels = []
@@ -253,20 +330,20 @@ def plot_cormat(DF, targ_cols, output_path,
     if (not os.path.exists(output_path)) or overwrite:
         if corrwith_cols is None:
             cormat = DF[targ_cols].corr()
-            annot_mat = pd.DataFrame(index=cormat.index, columns=cormat.columns, dtype=str)
-            for t1 in cormat.index:
-                for t2 in cormat.columns:
-                    annot_mat.loc[t1, t2] = _format_r(DF[t1], DF[t2])
+            p_mat = DF[targ_cols].corr(method=lambda x, y: pearsonr(x, y)[1] if np.std(x) > 0 and np.std(y) > 0 else np.nan)
+            p_stacked = p_mat.where(np.tril(np.ones(p_mat.shape), k=-1).astype(bool)).stack()
+            annot_mat = _create_annot_mat(cormat, p_stacked)
             mask = np.zeros_like(cormat)
             mask[np.triu_indices_from(mask)] = True
         else:
             cormat = pd.DataFrame(index=targ_cols, columns=corrwith_cols, dtype=float)
-            annot_mat = cormat.copy(deep=True)
+            p_mat = pd.DataFrame(index=targ_cols, columns=corrwith_cols, dtype=str)
             for t1 in targ_cols:
                 for t2 in corrwith_cols:
                     targ_df = DF[[t1, t2]].dropna()
-                    cormat.loc[t1, t2] = targ_df[t1].corr(targ_df[t2])
-                    annot_mat.loc[t1, t2] = _format_r(targ_df[t1], targ_df[t2])
+                    cormat.loc[t1, t2], p_mat.loc[t1, t2] = pearsonr(targ_df[t1], targ_df[t2])
+            p_stacked = p_mat.stack()
+            annot_mat = _create_annot_mat(cormat, p_stacked)
             mask = None
 
         x_col_names = cormat.columns if x_col_names is None else x_col_names
