@@ -1,9 +1,8 @@
 #!/usr/bin/python
 
-# python compare_versions.py <version_index> <same_scale>
+# python compare_versions.py -v [0|1] -n <note> [options]
 
 import os
-import re
 import sys
 import json
 import argparse
@@ -20,24 +19,42 @@ from gen_derivatives import (
 )
 sys.path.append(os.path.join(os.getcwd(), "..", "src"))
 from plotting import (
-    plot_categorical_bars, plot_bars_with_stats, plot_color_legend
+    plot_categorical_bars, plot_bars_with_stats, plot_cormat, plot_color_legend
 )
 
 ## Classes: ===========================================================================
 
 class Config:
     def __init__(self, args):
-        self.input_folders = {
-            version: os.path.join("..", "outputs", folder) for version, folder in dict(zip(
-                ["ByAgeSex", "ByAge", "BySex", "Undivided"], 
-                [args.by_age_sex, args.by_age, args.by_sex, args.unstratified]
-            )).items() if folder is not None
-        }
-        folder_name = f"{datetime.today().strftime('%Y-%m-%d')}_compare-versions"
-        self.output_folder = os.path.join("..", "derivatives", folder_name)
-        while os.path.exists(self.output_folder) and not args.overwrite:
-            self.output_folder += "+"
+        self.grouping_strategies = ["ByAgeSex", "ByAge", "BySex", "Undivided"]
+        self.model_types = ["ElasticNet", "CART", "RF", "XGBR", "LGBM"]
+
+        folder_prefix = datetime.today().strftime('%Y-%m-%d')
+        if args.add_prefix is not None:
+            folder_prefix = folder_prefix + "_" + args.add_prefix
+
+        if args.version_index == 0: # grouping strategies
+            self.input_folders = {
+                ver: os.path.join("..", "outputs", fd) for ver, fd in dict(zip(
+                    self.grouping_strategies, 
+                    [args.by_age_sex, args.by_age, args.by_sex, args.unstratified]
+                )).items() if fd is not None
+            }
+            folder_name = folder_prefix + "_compare-grouping-strategies"
         
+        elif args.version_index == 1: # model types
+            self.input_folders = {
+                ver: os.path.join("..", "outputs", fd) for ver, fd in dict(zip(
+                    self.model_types, 
+                    [args.elasticnet, args.cart, args.rf, args.xbgm, args.lgbm]
+                )).items() if fd is not None
+            }
+            folder_name = folder_prefix + "_compare-model-types"
+
+        if args.folder is not None: # overwrite default folder name
+            folder_name = args.folder
+
+        self.output_folder = os.path.join("..", "derivatives", folder_name)        
         self.notes_outpath            = os.path.join(self.output_folder, "version_notes.json")
         self.color_legend_outpath     = os.path.join(self.output_folder, "color_legend.png")
         self.results_outpath          = os.path.join(self.output_folder, "results_DF_{}.csv")
@@ -45,11 +62,27 @@ class Config:
         self.pad_pairstats_outpath    = os.path.join(self.output_folder, "compare_{}s.csv")
         self.pad_barplot_outpath      = os.path.join(self.output_folder, "[bar] compare_{}_{}s.png")
         self.pad_bar_stats_outpath    = os.path.join(self.output_folder, "[bar] compare_{}_{}s_with_stats.png")
+        self.cormat_outpath           = os.path.join(self.output_folder, "[cormat] between_{}s_in_{}.png")
 
 ## Functions: =========================================================================
 
 def define_arguments():
     parser = argparse.ArgumentParser()
+    parser.add_argument("-v", "--version_index", type=int, choices=[0, 1], required=True, 
+                        help="Compare between grouping strategies (0) or between model types (1).")
+    parser.add_argument("-p", "--add_prefix", type=str, default=None, 
+                        help="Additional prefix for the output folder name.")
+    parser.add_argument("-f", "--folder", type=str, default=None, 
+                        help="Output folder name (overwrites the default name).")
+    parser.add_argument("-n", "--note", type=str, default="", 
+                        help="Additional notes for the version comparison.")
+    parser.add_argument("-o", "--overwrite", action="store_true", default=False, 
+                        help="Whether to overwrite existing files.")
+    parser.add_argument("-dp", "--different_participants", action="store_true", default=False, 
+                        help="Whether the versions contain different participants.")
+    parser.add_argument("-ss", "--same_scale", action="store_true", default=False, 
+                        help="Whether to use the same scale for all versions.")
+        
     parser.add_argument("-ba", "--by_age", type=str, default=None, 
                         help="Output folder where models trained by age groups are stored.")
     parser.add_argument("-bs", "--by_sex", type=str, default=None, 
@@ -58,14 +91,17 @@ def define_arguments():
                         help="Output folder where models trained by age groups and gender are stored.")
     parser.add_argument("-un", "--unstratified", type=str, default=None, 
                         help="Output folder where unstratified models are stored.")
-    parser.add_argument("-ss", "--same_scale", action="store_true", default=False, 
-                        help="Whether to use the same scale for all versions.")
-    parser.add_argument("-dp", "--different_participants", action="store_true", default=False, 
-                        help="Whether the versions contain different participants.")
-    parser.add_argument("-n", "--note", type=str, default="", 
-                        help="Note for the version comparison.")
-    parser.add_argument("-o", "--overwrite", action="store_true", default=False, 
-                        help="Whether to overwrite existing files.")
+
+    parser.add_argument("-m0", "--elasticnet", type=str, default=None,
+                        help="Output folder where models trained by ElasticNet are stored.")
+    parser.add_argument("-m1", "--cart", type=str, default=None, 
+                        help="Output folder where models trained by DecisionTreeRegressor are stored.")
+    parser.add_argument("-m2", "--rf", type=str, default=None, 
+                        help="Output folder where models trained by RandomForestRegressor are stored.")
+    parser.add_argument("-m3", "--xbgm", type=str, default=None, 
+                        help="Output folder where models trained by XGBRegressor are stored.")
+    parser.add_argument("-m4", "--lgbm", type=str, default=None, 
+                        help="Output folder where models trained by LGBMRegressor are stored.")
     return parser.parse_args()
 
 def compare_pad_values(V1_abs, V2_abs, independent=False):
@@ -137,7 +173,9 @@ def main():
         "Different_Participants": args.different_participants,
         "Plot_in_Same_Scale": args.same_scale
     }
-    notes.update(config.input_folders)
+    notes.update({
+        ver: os.path.basename(fd) for ver, fd in config.input_folders.items()
+    })
     with open(config.notes_outpath, 'w', encoding="utf-8") as f:
         json.dump(notes, f, ensure_ascii=False)
     print(f"\nVersion notes is saved to:\n{config.notes_outpath}")
@@ -174,8 +212,9 @@ def main():
         )
 
         result_DF["Version"] = version
-        result_DF["PAD_abs"] = result_DF["PredictedAgeDifference"].abs()
-        result_DF["PADAC_abs"] = result_DF["CorrectedPAD"].abs()
+        result_DF.rename(columns={"PredictedAgeDifference": "PAD", "CorrectedPAD": "PADAC",}, inplace=True)
+        result_DF["PAD_abs"] = result_DF["PAD"].abs()
+        result_DF["PADAC_abs"] = result_DF["PADAC"].abs()        
         if "Sex" not in result_DF.columns:
             result_DF["Sex"] = ""
             result_DF.replace({"AgeGroup": {"le-44": "Y", "ge-45": "O"}}, inplace=True)
@@ -183,6 +222,7 @@ def main():
             result_DF.replace({"AgeGroup": {"all": "", "le-44": "Y", "ge-45": "O"}}, inplace=True)
         
         result_DF["Group"] = result_DF["AgeGroup"] + result_DF["Sex"]
+        result_DF["VerType"] = result_DF["Version"] + "_" + result_DF["Type"]
 
         result_DF_list.append(result_DF)
         print()
@@ -197,68 +237,102 @@ def main():
     for pad_col in ["PAD_abs", "PADAC_abs"]:
 
         ## Stats
-        stats_DF_list = []
-        for ori_name in feature_orientations:
-            print(f"\nCalculating stats for {ori_name}...")
-
-            for ver_1, ver_2 in itertools.combinations(version_list, 2):
-                stats_results = compare_pad_values(
-                    V1_abs=final_result_DF.query(f"Type == '{ori_name}' & Version == '{ver_1}'")[pad_col], 
-                    V2_abs=final_result_DF.query(f"Type == '{ori_name}' & Version == '{ver_2}'")[pad_col], 
-                    independent=True if args.different_participants else False
-                )
-                stats_results.insert(0, "Type", ori_name)
-                stats_results.insert(1, "V1", ver_1)
-                stats_results.insert(2, "V2", ver_2)
-                stats_DF_list.append(stats_results)
-
-        stats_DF = pd.concat(stats_DF_list, ignore_index=True)
         pad_pairstats_outpath = config.pad_pairstats_outpath.format(pad_col.replace("_abs", ""))
-        stats_DF.to_csv(pad_pairstats_outpath, index=False)
-        print(f"\nStats results is saved to:\n{pad_pairstats_outpath}")
+
+        if not os.path.exists(pad_pairstats_outpath) or args.overwrite:
+            stats_DF_list = []
+
+            for ori_name in feature_orientations:
+                print(f"\nCalculating stats for {ori_name} ...")
+
+                for ver_1, ver_2 in itertools.combinations(version_list, 2):
+                    stats_results = compare_pad_values(
+                        V1_abs=final_result_DF.query(f"Type == '{ori_name}' & Version == '{ver_1}'")[pad_col], 
+                        V2_abs=final_result_DF.query(f"Type == '{ori_name}' & Version == '{ver_2}'")[pad_col], 
+                        independent=True if args.different_participants else False
+                    )
+                    stats_results.insert(0, "Type", ori_name)
+                    stats_results.insert(1, "V1", ver_1)
+                    stats_results.insert(2, "V2", ver_2)
+                    stats_DF_list.append(stats_results)
+
+            stats_DF = pd.concat(stats_DF_list, ignore_index=True)
+            stats_DF.to_csv(pad_pairstats_outpath, index=False)
+            print(f"\nStats results is saved to:\n{pad_pairstats_outpath}")
 
         ## Plots:
         for ori_name in feature_orientations:
-            print(f"\nPlotting for {ori_name}...")
-
             g1_fig_outpath = config.pad_barplot_outpath.format(ori_name, pad_col.replace("_abs", ""))
-            g1 = plot_categorical_bars(
-                DF=final_result_DF.query(f"Type == '{ori_name}'"), 
-                pad_col=pad_col, 
-                version_list=version_list, 
-                color_dict=color_dict
-            )
-
             g2_fig_outpath = config.pad_bar_stats_outpath.format(ori_name, pad_col.replace("_abs", ""))
-            g2 = plot_bars_with_stats(
-                result_DF=final_result_DF.query(f"Type == '{ori_name}'"), 
-                stats_DF=stats_DF.query(f"Type == '{ori_name}'"),
-                pad_col=pad_col, 
-                version_list=version_list, 
-                color_dict=color_dict, 
-                potential_y_lim=g1.axes[0, 0].get_ylim()[1] if args.same_scale else 0
+
+            if not (os.path.exists(g1_fig_outpath) and os.path.exists(g2_fig_outpath)) or args.overwrite:
+                print(f"\nPlotting for {ori_name} ...")
+
+                g1 = plot_categorical_bars(
+                    DF=final_result_DF.query(f"Type == '{ori_name}'"), 
+                    pad_col=pad_col, 
+                    version_list=version_list, 
+                    color_dict=color_dict
+                )
+
+                g2 = plot_bars_with_stats(
+                    result_DF=final_result_DF.query(f"Type == '{ori_name}'"), 
+                    stats_DF=stats_DF.query(f"Type == '{ori_name}'"),
+                    pad_col=pad_col, 
+                    version_list=version_list, 
+                    color_dict=color_dict, 
+                    potential_y_lim=g1.axes[0, 0].get_ylim()[1] if args.same_scale else 0
+                )
+
+                ## Ensure the same y-limits
+                if args.same_scale:
+                    y_lim = max([
+                        g1.axes[0, 0].get_ylim()[1], 
+                        g2.get_ylim()[1]
+                    ])
+                else:
+                    y_lim = None
+
+                g1.set(ylim=(0, y_lim))
+                g1.figure.tight_layout()
+                g1.figure.savefig(g1_fig_outpath)
+                print(f"\nCategorical bar plot of {pad_col} is saved to:\n{g1_fig_outpath}")
+                plt.close(g1.figure)
+
+                g2.set(ylim=(0, y_lim))
+                g2.figure.tight_layout()
+                g2.figure.savefig(g2_fig_outpath)
+                print(f"\nBar plot with stats of {pad_col} is saved to:\n{g2_fig_outpath}")
+                plt.close(g2.figure)
+
+    ## Big correlation matrix
+    pad_col = ["PAD", "PADAC"][0]
+
+    for g in final_result_DF["Group"].unique():
+        cormat_outpath = config.cormat_outpath.format(pad_col, g)
+
+        if not os.path.exists(cormat_outpath) or args.overwrite:
+            print("\nPlotting correlation matrix ...")
+            wide_result_DF = (
+                final_result_DF.query(f"Group == '{g}'")
+                .loc[:, ["VerType", "SID", pad_col]]
+                .pivot(index="SID", columns="VerType", values=pad_col)
+                .reset_index()
+                .rename(columns={"index": "SID"})
             )
-
-            ## Ensure the same y-limits
-            if args.same_scale:
-                y_lim = max([
-                    g1.axes[0, 0].get_ylim()[1], 
-                    g2.get_ylim()[1]
-                ])
-            else:
-                y_lim = None
-
-            g1.set(ylim=(0, y_lim))
-            g1.figure.tight_layout()
-            g1.figure.savefig(g1_fig_outpath)
-            print(f"\nCategorical bar plot of {pad_col} is saved to:\n{g1_fig_outpath}")
-            plt.close(g1.figure)
-
-            g2.set(ylim=(0, y_lim))
-            g2.figure.tight_layout()
-            g2.figure.savefig(g2_fig_outpath)
-            print(f"\nBar plot with stats of {pad_col} is saved to:\n{g2_fig_outpath}")
-            plt.close(g2.figure)
+            sorted_cols = list( "_".join(t) for t in itertools.product(
+                [ v for v in [config.grouping_strategies, config.model_types][args.version_index] if v in version_list ], 
+                [ o for o in ["STR", "BEH", "FUN"] if o in feature_orientations ]
+            ))
+            plot_cormat(
+                DF=wide_result_DF.loc[:, sorted_cols], 
+                targ_cols=sorted_cols, 
+                x_col_names=[ col.replace("_", "\n") for col in sorted_cols ],
+                # xr=45, 
+                figsize=(15, 8), 
+                output_path=cormat_outpath, 
+                overwrite=args.overwrite
+            )
 
 if __name__ == "__main__":
     main()

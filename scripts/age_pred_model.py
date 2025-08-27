@@ -7,6 +7,7 @@ import pickle
 import shutil
 import argparse
 import logging
+import random
 import numpy as np
 import pandas as pd
 from datetime import datetime
@@ -93,7 +94,7 @@ class Constants:
                 "approaches": ["MRI", "BEH", "EEG"]
             }
         }
-        if args.include_all_mappings:
+        if not args.no_all_mappings:
             self.domain_approach_mapping.update(self.all_domain_approach_mapping)
         elif args.only_all_mapping:
             self.domain_approach_mapping = self.all_domain_approach_mapping
@@ -101,10 +102,10 @@ class Constants:
         ## The names of models to evaluate:
         self.model_names = [ 
             "ElasticNet", 
-            "RF",   # RandomForestRegressor
             "CART", # DecisionTreeRegressor
-            "LGBM", # lgb.LGBMRegressor
-            "XGBM"  # xgb.XGBRegressor
+            "RF",   # RandomForestRegressor
+            "XGBM", # xgb.XGBRegressor
+            "LGBM"  # lgb.LGBMRegressor
         ]
 
         ## The number of participants in each balanced group:
@@ -133,6 +134,8 @@ class Config:
         self.raw_data_path = os.path.join(self.source_path, "data", "rawdata", "DATA_ses-01_2024-12-09.csv")
         self.inclusion_data_path = os.path.join(self.source_path, "data", "rawdata", "InclusionList_ses-01.csv")
         self.syndata_folder = os.path.join(self.source_path, "data", "syndata")
+        if args.pretrained_model_folder is not None:
+            self.pretrained_model_folder = os.path.join(self.source_path, "outputs", args.pretrained_model_folder)
         self = self._setup_vars(args, constants)
         self = self._setup_out_folder(args)
         self.logging_outpath                 = os.path.join(self.out_folder, "log.txt")
@@ -205,7 +208,11 @@ class Config:
             prefix += "_sex-0"
 
         if args.pretrained_model_folder is not None:
-            self.out_folder = os.path.join(self.source_path, "outputs", f"{prefix}_pre-trained")
+            self.out_folder = os.path.join(self.source_path, "outputs", f"{prefix} ({args.pretrained_model_folder})")
+            # self.out_folder = os.path.join(self.source_path, "outputs", f"{prefix}_pre-trained")
+        elif args.training_model is not None:
+            model_name = self.included_models[0]
+            self.out_folder = os.path.join(self.source_path, "outputs", f"{prefix}_{model_name}")
         else:
             self.out_folder = os.path.join(self.source_path, "outputs", prefix)
 
@@ -242,13 +249,14 @@ def define_arguments():
     ## Split data into training and testing sets:
     parser.add_argument("-tsr", "--testset_ratio", type=float, default=0.3, 
                         help="The ratio of the testing set.")
-    parser.add_argument("-sid", "--split_with_ids", type=str, default=None, 
+    parser.add_argument("-sid", "--split_with_ids", type=str, # default=None, 
+                        default=os.path.join(os.getcwd(), "..", "outputs", "train_and_test_ids.json"), 
                         help="File path of a dictionary (.json) containing two lists of IDs to be used for splitting the data into training and testing sets. "+
                         "If provided, the testset_ratio will be determined by its length.")
     
     ## Feature selection:
-    parser.add_argument("-iam", "--include_all_mappings", action="store_true", default=False, 
-                        help="Include 'All' domain-approach mappings for feature selection.")
+    parser.add_argument("-nam", "--no_all_mappings", action="store_true", default=False, 
+                        help="Not to include 'All' domain-approach mappings for feature selection.")
     parser.add_argument("-oam", "--only_all_mapping", action="store_true", default=False, 
                         help="Include only 'All' domain-approach mappings for feature selection.")
     parser.add_argument("-psf", "--preselected_feature_folder", type=str, default=None, 
@@ -353,6 +361,16 @@ def save_description(args, config, constants):
 
     logging.info("The description of the current execution is saved :-)")
     
+def include_features_by_domain_and_approach(DF, domains, approaches, ori_name): 
+    included_features = [ col for col in DF.columns if any( d in col for d in domains ) and any( a in col for a in approaches ) ]
+    
+    if ori_name == "FUNCTIONAL": # exclude "STRUCTURE" features
+        included_features = [ col for col in included_features if "STRUCTURE" not in col ]
+    elif ori_name == None:
+        included_features = ["ID", "BASIC_INFO_AGE", "BASIC_INFO_SEX"] + included_features
+
+    return DF.loc[:, included_features]
+
 def divide_dataset(DF, config, divide_by_gender):
     '''
     Divide the dataset into groups based on participants' age (and gender).
@@ -391,7 +409,13 @@ def preprocess_divided_dataset(X, y, ids, split_with_ids, testset_ratio, trained
         outliers = na_rates[na_rates > (Q3 + IQR * 1.5)]
 
         return X.drop(columns=outliers.index)
-
+    
+    def _feature_scaling(X, scaler, trained_or_not):
+        if trained_or_not == "not_trained":
+            return pd.DataFrame(scaler.fit_transform(X), columns=X.columns)
+        else: # "trained"
+            return pd.DataFrame(scaler.transform(X), columns=X.columns)
+        
     def _get_normed_train_test(X, y, ids, split_with_ids, testset_ratio, trained_scaler, seed):
         if trained_scaler is None:
             scaler = StandardScaler() # to have zero mean and unit variance
@@ -415,17 +439,10 @@ def preprocess_divided_dataset(X, y, ids, split_with_ids, testset_ratio, trained
                 X_train, X_test, y_train, y_test, id_train, id_test = train_test_split(
                     X, y, ids, test_size=testset_ratio, random_state=seed
                 )
-
             X_train_scaled = _feature_scaling(X_train, scaler, trained_or_not)
             X_test_scaled = _feature_scaling(X_test, scaler, "trained")
 
         return X_train_scaled, y_train, id_train, X_test_scaled, y_test, id_test, scaler
-
-    def _feature_scaling(X, scaler, trained_or_not):
-        if trained_or_not == "not_trained":
-            return pd.DataFrame(scaler.fit_transform(X), columns=X.columns)
-        else: # "trained"
-            return pd.DataFrame(scaler.transform(X), columns=X.columns)
     
     X_cleaned = _remove_outlier_features(X)
     imputer = SimpleImputer(strategy="median")
@@ -547,7 +564,6 @@ def optimize_objective(trial, X, y, # default_fs_params,
     #         "fs_explained_ratio": trial.suggest_float("fs_explained_ratio", 0.9, 1), 
     #         "fs_threshold": trial.user_attrs["fs_threshold"]
     #     })
-
     params = {}
 
     ## Set up model parameters:
@@ -619,10 +635,11 @@ def train_and_evaluate(X, y, # fs_method, thresh_method, max_feature_num,
         logging.info(f"Optimizing hyperparameters for {model_name} ...")
 
         ## Initialize the model with the best hyperparameters:
+        module = optunahub.load_module(package="samplers/auto_sampler")
         study = optuna.create_study(
             direction='minimize', 
             # sampler=optuna.samplers.TPESampler(seed=seed), 
-            sampler=optunahub.load_module("samplers/auto_sampler").AutoSampler() 
+            sampler=module.AutoSampler(seed=seed) 
                 ## automatically selects an algorithm internally, see: https://medium.com/optuna/autosampler-automatic-selection-of-optimization-algorithms-in-optuna-1443875fd8f9
         )
         # default_fs_params = {
@@ -761,16 +778,18 @@ def calc_bias_free_offsets(reg, predicted_ages):
 ## Main function: ---------------------------------------------------------------------
 
 def main():
-    ## Parse command line arguments (and set temporary default values):
+    ## Parse command line arguments:
     args = define_arguments()
-    args.split_with_ids = os.path.join(os.getcwd(), "..", "outputs", "train_and_test_ids.json")
-    args.include_all_mappings = True
 
     ## Setup config and constants objects:
     constants = Constants(args)
     config = Config(args, constants)
 
     os.makedirs(config.out_folder)
+    
+    random.seed(config.seed)
+    np.random.seed(config.seed)
+    os.environ["PYTHONHASHSEED"] = str(config.seed)
 
     ## Setup logging:
     logging.basicConfig(
@@ -828,7 +847,15 @@ def main():
     if args.prepare_data_and_exit:
         logging.info("Data preparation is completed. Exiting the program ...")
         return
-    
+
+    logging.info("Including features of specific domains and approaches ...")
+    DF_prepared = include_features_by_domain_and_approach(
+        DF_prepared, 
+        domains=["STRUCTURE", "MOTOR", "MEMORY", "LANGUAGE"], 
+        approaches=["MRI", "BEH", "EEG"], 
+        ori_name=None
+    )
+
     ## Divide the dataset into groups, define their labels, and separately perform preprocessing:
     group_name_list, sub_DF_list = divide_dataset(DF_prepared, config, args.by_gender)
     preprocessed_data_dicts = {}
@@ -845,7 +872,7 @@ def main():
             if args.pretrained_model_folder is not None:
                 logging.info("Loading pre-trained scaler ...")
                 try:
-                    with open(os.path.join("outputs", args.pretrained_model_folder, f"scaler_{group_name}.pkl"), 'rb') as f:
+                    with open(os.path.join(config.pretrained_model_folder, f"scaler_{group_name}.pkl"), 'rb') as f:
                         trained_scaler = pickle.load(f)
                     
                 except FileNotFoundError:
@@ -904,7 +931,7 @@ def main():
                     if args.pretrained_model_folder is not None:                       
                         logging.info("Using the pre-trained model :-P")
 
-                        saved_json = os.path.join("outputs", args.pretrained_model_folder, f"results_{group_name}_{ori_name}.json")
+                        saved_json = os.path.join(config.pretrained_model_folder, f"results_{group_name}_{ori_name}.json")
                         with open(saved_json, 'r', encoding='utf-8') as f:
                             saved_results = json.load(f)
 
@@ -912,7 +939,7 @@ def main():
                         selected_features = saved_results["FeatureNames"]
 
                         if not args.no_pca:
-                            reducer_path = os.path.join("outputs", args.pretrained_model_folder, os.path.basename(config.reducer_outpath_format.format(group_name, ori_name)))
+                            reducer_path = os.path.join(config.pretrained_model_folder, os.path.basename(config.reducer_outpath_format.format(group_name, ori_name)))
                             with open(reducer_path, 'rb') as f:
                                 reducer = pickle.load(f)
                             X_train_transformed = reducer.transform(data_dict["X_train"])
@@ -920,7 +947,7 @@ def main():
                             raise NotImplementedError("Using PCA is required for now.")
                             # X_train_selected = data_dict["X_train"].loc[:, selected_features]
 
-                        saved_model = os.path.join("outputs", args.pretrained_model_folder, f"models_{group_name}_{ori_name}_{best_model_name}.pkl")
+                        saved_model = os.path.join(config.pretrained_model_folder, f"models_{group_name}_{ori_name}_{best_model_name}.pkl")
                         with open(saved_model, 'rb') as f:
                             trained_model = pickle.load(f)
 
@@ -940,23 +967,20 @@ def main():
                         
                         else: # do what supposed to be done
                             logging.info("Filtering features based on the domain and approach ...")
-                            included_features = [ 
-                                col for col in data_dict["X_train"].columns
-                                if any( domain in col for domain in ori_content["domains"] )
-                                and any( app in col for app in ori_content["approaches"] )
-                            ]
-                            if ori_name == "FUNCTIONAL": # exclude "STRUCTURE" features
-                                included_features = [ col for col in included_features if "STRUCTURE" not in col ]
-                            
-                            if len(included_features) == 0: 
+                            X_train_included = include_features_by_domain_and_approach(
+                                data_dict["X_train"], 
+                                domains=ori_content["domains"], 
+                                approaches=ori_content["approaches"] , 
+                                ori_name=ori_name
+                            )
+
+                            if X_train_included.empty: 
                                 logging.warning("No features are included for the current orientation, the definition may be wrong!!")
                                 logging.info("Unable to train models, skipping ...")
                                 record_if_failed.append(f"{ori_name} of {group_name}.")
                                 continue
 
-                            else: # good, go ahead
-                                X_train_included = data_dict["X_train"].loc[:, included_features]
-                                
+                            else: # good, go ahead                                
                                 if not args.no_pca:
                                     logging.info("Performing dimensionality reduction ...")
                                     reducer = FeatureReducer(seed=config.seed, n_iter=100)

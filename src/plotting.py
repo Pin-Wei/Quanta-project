@@ -305,21 +305,27 @@ def plot_feature_importances(feature_importances, output_path,
 
 ## heatmap ----------------------------------------------------------------------------
 
-def plot_cormat(DF, targ_cols, output_path, fdr=0.05, 
-                corrwith_cols=None, xr=0, yr=0, c_bar=False, 
+def plot_cormat(DF, targ_cols, output_path, fdr=0.05, corrwith_cols=None, 
                 x_col_names=None, y_col_names=None, shorter_xcol_names=False, 
+                xr=0, yr=0, c_bar=False, square=False, 
                 font_scale=1.1, figsize=(3, 3), dpi=200, overwrite=False):
     '''
     Compute correlation matrix and plot it as a heatmap.
     '''
+    def _corr_p(x, y):
+        mask = ~ (np.isnan(x) | np.isnan(y)) # only use rows without NaN in either column
+        if np.std(x[mask]) == 0 or np.std(y[mask]) == 0:
+            return np.nan # correlation is undefined if either variable has zero variance
+        else:
+            return pearsonr(x[mask], y[mask])[1]
+
     def _create_annot_mat(cormat, p_stacked, fdr=fdr):
         q_vals = fdrcorrection(p_stacked.dropna().values, alpha=fdr)[1]
         q_stacked = pd.Series(q_vals, index=p_stacked.index)
         q_mat = q_stacked.unstack()
         q_sig = q_mat.map(lambda x: "*" * sum( x <= t for t in [0.05, 0.01, 0.001] ))
-        annot_mat = cormat.map(lambda x: f"{x:.2f}") + q_sig
-        # annot_mat = cormat.round(2).astype(str) + q_sig
-        return annot_mat.fillna("N/A")
+        annot_mat = cormat.map(lambda x: f"{x:.2f}") + q_sig.reindex_like(cormat)
+        return annot_mat.fillna("--")
             
     def _rename_labels(col_names):
         renamed_labels = []
@@ -330,7 +336,7 @@ def plot_cormat(DF, targ_cols, output_path, fdr=0.05,
     if (not os.path.exists(output_path)) or overwrite:
         if corrwith_cols is None:
             cormat = DF[targ_cols].corr()
-            p_mat = DF[targ_cols].corr(method=lambda x, y: pearsonr(x, y)[1] if np.std(x) > 0 and np.std(y) > 0 else np.nan)
+            p_mat = DF[targ_cols].corr(method=lambda x, y: _corr_p(x, y))
             p_stacked = p_mat.where(np.tril(np.ones(p_mat.shape), k=-1).astype(bool)).stack()
             annot_mat = _create_annot_mat(cormat, p_stacked)
             mask = np.zeros_like(cormat)
@@ -359,7 +365,7 @@ def plot_cormat(DF, targ_cols, output_path, fdr=0.05,
         sns.set_theme(style='white', font_scale=font_scale)
         plt.figure(figsize=figsize, dpi=dpi)
         g = sns.heatmap(
-            cormat, mask=mask, # square=True, 
+            cormat, mask=mask, square=square, 
             vmin=-1, vmax=1, linewidth=.5, cmap="RdBu_r", cbar=c_bar, 
             cbar_kws=None if c_bar is False else {"shrink": 0.5, "label": "$r$"}, 
             annot=pd.DataFrame(annot_mat), fmt = "", # annot_kws={"size": 16}, 

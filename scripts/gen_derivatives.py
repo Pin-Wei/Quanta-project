@@ -134,8 +134,8 @@ class ColorDicts:
             "AC":  "#FF1493" # age-corrected
         }
         self.pad_bars = {
-            "PAD":    "#219EBC",
-            "PAD_ac": "#FB8500" 
+            "PAD":    "#00BFFF", # "#219EBC",
+            "PAD_ac": "#FF1493"  # "#FB8500" 
         }
         self.sunburst = {
             "STRUCTURE": {
@@ -605,9 +605,10 @@ def main():
                 fw = len(feature_importances) * 0.3
                 plot_feature_importances(
                     feature_importances=feature_importances, 
+                    # x_lim=None, 
+                    fig_size=(8, fw), 
                     output_path=config.feature_importance_outpath.format(ori_name[:3], group_name), 
-                    overwrite=args.overwrite, 
-                    fig_size=(8, fw)
+                    overwrite=args.overwrite
                 )
 
     ## Plot the relationship between real and predicted ages:
