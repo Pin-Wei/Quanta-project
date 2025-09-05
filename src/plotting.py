@@ -180,7 +180,7 @@ def plot_pad_bars(DF, x_lab, one_or_many, color_dict, output_path,
         y_name = "PAD Value"
 
     if (not os.path.exists(output_path)) or overwrite:
-        DF[x_lab] = DF[x_lab].map(lambda x: x.replace("all_", "")) # for better x-axis labels
+        # DF[x_lab] = DF[x_lab].map(lambda x: x.replace("all_", "")) # for better x-axis labels
         sns.set_theme(style="whitegrid")
         sns.set_context("talk", font_scale=1.2)
         g = sns.catplot(

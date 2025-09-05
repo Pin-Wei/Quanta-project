@@ -206,8 +206,8 @@ def define_arguments():
                         help="The folder name of the model outputs.")
     parser.add_argument("-padac", "--use_padac", action="store_true", default=False,
                         help="Use age-corrected PAD values for correlation analysis.")
-    # parser.add_argument("-pad", "--use_pad", action="store_true", default=False,
-                        # help="Use PAD values that have not been corrected for age.")
+    parser.add_argument("-cbg", "--custom_bar_x_lab", type=int, default=None,
+                        help="Use custom grouping strategy for PAD bar plots (0: AgeGroup; 1: AgeSex).")
     parser.add_argument("-ia", "--ignore_all", action="store_true", default=False,
                         help="Ignore 'All' feature orientations.")
     parser.add_argument("-o", "--overwrite", action="store_true", default=False, 
@@ -268,10 +268,10 @@ def load_model_results(config, desc, const, output_path, overwrite=False):
         processed_results.insert(0, "Type", ori_name[:3])
         if sep_sex:
             age_group, sex = label
-            processed_results.insert(2, "AgeGroup", age_group)
+            processed_results.insert(2, "AgeGroup", {"all": "", "le-44": "Y", "ge-45": "O"}[age_group])
             processed_results.insert(2, "Sex", sex)
         else:
-            processed_results.insert(2, "AgeGroup", label) # should be age group
+            processed_results.insert(2, "AgeGroup", {"all": "all", "le-44": "Y", "ge-45": "O"}[label]) 
 
         return processed_results
 
@@ -367,6 +367,34 @@ def save_subj_infos(DF, desc, output_path, overwrite=False):
         )
         print(f"\nSubject infos are saved to:\n{output_path}")
 
+def force_agesex_cols(DF, DF2):
+    '''
+    Mandatory addition of columns to separate gender and age groups
+    for customized x-axis labels in bar plots.
+    <Inputs>
+    - DF: the 'model results' DataFrame containing 'SID' and 'Age' columns.
+    - DF2: the 'subject info' DataFrame containing 'SID' and 'BASIC_INFO_SEX' columns.
+    '''
+    if "SID" not in DF.columns or "Age" not in DF.columns:
+        raise ValueError("The input DataFrame must contain 'SID' and 'Age' columns.")
+    if "SID" not in DF2.columns or "BASIC_INFO_SEX" not in DF2.columns:
+        raise ValueError("The second DataFrame must contain 'SID' and 'BASIC_INFO_SEX' columns.")
+
+    DF = DF.copy(deep=True)                     
+    age_group_labels = ["le-44", "ge-45"] # no other options for now
+    age_breaks = [0, 44, np.inf]
+    DF["AgeGroup"] = pd.cut(
+        DF["Age"], bins=age_breaks, labels=age_group_labels
+    )
+    DF2 = DF2.loc[:, ["SID", "BASIC_INFO_SEX"]].copy(deep=True)
+    DF2["Sex"] = DF2["BASIC_INFO_SEX"].replace({1: "M", 2: "F"})
+    DF2.drop(columns=["BASIC_INFO_SEX"], inplace=True)
+    DF.drop(columns=["Sex"], inplace=True) # force re-creation
+    DF = DF.merge(DF2, left_on="SID", right_on="SID", how="left")  
+    DF["AgeSex"] = DF["AgeGroup"].astype(str) + "_" + DF["Sex"]
+
+    return DF
+
 def make_long_result_DF(DF, desc):
     '''
     Modify and transform the 'model results' DataFrame into long format.
@@ -402,8 +430,11 @@ def make_grouped_result_DF(DF, desc, pad_type):
     DF = DF[DF["PAD_type"] == pad_type] 
     grouped_result_DF = {}
 
-    for label in desc.label_list: 
-        group_name = "_".join(label) if desc.sep_sex else label
+    # for label in desc.label_list: 
+    #     group_name = "_".join(label) if desc.sep_sex else label
+    renamed_labels = DF["AgeSex"].unique() if desc.sep_sex else DF["AgeGroup"].unique()
+
+    for group_name in renamed_labels:
         if desc.sep_sex:
             sub_df = DF.query("AgeSex == @group_name")
         else:
@@ -570,7 +601,7 @@ def main():
         overwrite=args.overwrite
     )
 
-    ## Save some general information:
+    ## Save some general information: 
     save_model_infos(
         DF=result_DF.copy(deep=True), 
         desc=desc, 
@@ -605,7 +636,7 @@ def main():
                 fw = len(feature_importances) * 0.3
                 plot_feature_importances(
                     feature_importances=feature_importances, 
-                    # x_lim=None, 
+                    x_lim=None, # since those values of LGBM are greater than the [-1, 1] range
                     fig_size=(8, fw), 
                     output_path=config.feature_importance_outpath.format(ori_name[:3], group_name), 
                     overwrite=args.overwrite
@@ -680,23 +711,30 @@ def main():
     ## Modify and transform results_DF into long format:
     long_result_DF = make_long_result_DF(result_DF, desc)
 
+    ## If custom grouping strategy is specified for PAD bar plots:
+    fname_add = ""
+    if args.custom_bar_x_lab is not None:
+        bar_df = force_agesex_cols(DF=long_result_DF, DF2=data_DF)
+        custom_bar_x_lab = ["AgeGroup", "AgeSex"][args.custom_bar_x_lab]
+        fname_add = f" (grouped by '{custom_bar_x_lab}')"
+
     ## Plot PAD bars: 
     plot_pad_bars(
-        DF=long_result_DF.copy(deep=True), # avoid modifying the original DataFrame, 
-        x_lab=desc.grouping_col, 
+        DF=long_result_DF if args.custom_bar_x_lab is None else bar_df, 
+        x_lab=desc.grouping_col if args.custom_bar_x_lab is None else custom_bar_x_lab, 
         one_or_many="many", 
         color_dict = color_dicts.pad_bars, 
-        output_path=config.pad_barplot_outpath.format(suffix), 
+        output_path=config.pad_barplot_outpath.format(suffix + fname_add), 
         overwrite=args.overwrite
     )
 
     for ori_name in desc.feature_oris: 
         plot_pad_bars(
-            DF=long_result_DF.query("Type == @ori_name").copy(deep=True), 
-            x_lab=desc.grouping_col, 
+            DF=long_result_DF.query("Type == @ori_name") if args.custom_bar_x_lab is None else bar_df.query("Type == @ori_name"), 
+            x_lab=desc.grouping_col if args.custom_bar_x_lab is None else custom_bar_x_lab, 
             one_or_many="one", 
             color_dict = color_dicts.pad_bars, 
-            output_path=config.pad_barplot_outpath.format(f" ({ori_name})"), 
+            output_path=config.pad_barplot_outpath.format(fname_add + f" ({ori_name})"), 
             y_max=const.pad_bar_y_lims[ori_name],
             overwrite=args.overwrite
         )
@@ -707,7 +745,7 @@ def main():
         fig_size=(2, .5), n_cols=2, box_size=0.5, overwrite=args.overwrite
     )
 
-    ## 
+    ## Correlation analyses: 
     grouped_result_DF = make_grouped_result_DF(long_result_DF, desc, pad_type)
     pad_with_interested_features = []
 

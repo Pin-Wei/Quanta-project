@@ -15,7 +15,7 @@ from scipy import stats
 import matplotlib.pyplot as plt
 
 from gen_derivatives import (
-    Constants, Description, load_model_results
+    Constants, Description, load_model_results, force_agesex_cols
 )
 sys.path.append(os.path.join(os.getcwd(), "..", "src"))
 from plotting import (
@@ -54,7 +54,9 @@ class Config:
         if args.folder is not None: # overwrite default folder name
             folder_name = args.folder
 
-        self.output_folder = os.path.join("..", "derivatives", folder_name)        
+        self.source_path              = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+        self.raw_data_path            = os.path.join(self.source_path, "data", "rawdata", "DATA_ses-01_2024-12-09.csv")
+        self.output_folder            = os.path.join(self.source_path, "derivatives", folder_name)        
         self.notes_outpath            = os.path.join(self.output_folder, "version_notes.json")
         self.color_legend_outpath     = os.path.join(self.output_folder, "color_legend.png")
         self.results_outpath          = os.path.join(self.output_folder, "results_DF_{}.csv")
@@ -76,12 +78,17 @@ def define_arguments():
                         help="Output folder name (overwrites the default name).")
     parser.add_argument("-n", "--note", type=str, default="", 
                         help="Additional notes for the version comparison.")
+    parser.add_argument("-nn", "--no_note", action="store_true", default=False, 
+                        help="Whether to skip adding notes.")
     parser.add_argument("-o", "--overwrite", action="store_true", default=False, 
                         help="Whether to overwrite existing files.")
+    
     parser.add_argument("-dp", "--different_participants", action="store_true", default=False, 
                         help="Whether the versions contain different participants.")
     parser.add_argument("-ss", "--same_scale", action="store_true", default=False, 
                         help="Whether to use the same scale for all versions.")
+    parser.add_argument("-cbg", "--custom_bar_x_lab", type=int, default=None, 
+                        help="Use custom grouping strategy for PAD bar plots (0: AgeGroup; 1: AgeSex).")
         
     parser.add_argument("-ba", "--by_age", type=str, default=None, 
                         help="Output folder where models trained by age groups are stored.")
@@ -156,6 +163,8 @@ def compare_pad_values(V1_abs, V2_abs, independent=False):
 
 def main():
     args = define_arguments()
+    custom_bar_x_lab = ["AgeGroup", "AgeSex"][args.custom_bar_x_lab] if args.custom_bar_x_lab is not None else None
+
     const = Constants()
     config = Config(args)
 
@@ -168,17 +177,20 @@ def main():
     print(f"\nOutput folder: {config.output_folder}")
 
     ## Save version notes
-    notes = {
-        "Note": args.note, 
-        "Different_Participants": args.different_participants,
-        "Plot_in_Same_Scale": args.same_scale
-    }
-    notes.update({
-        ver: os.path.basename(fd) for ver, fd in config.input_folders.items()
-    })
-    with open(config.notes_outpath, 'w', encoding="utf-8") as f:
-        json.dump(notes, f, ensure_ascii=False)
-    print(f"\nVersion notes is saved to:\n{config.notes_outpath}")
+    if not args.no_note:
+        notes = {
+            "Note": args.note, 
+            "Different_Participants": args.different_participants,
+            "Plot_in_Same_Scale": args.same_scale
+        }
+        notes.update({
+            ver: os.path.basename(fd) for ver, fd in config.input_folders.items()
+        })
+        while os.path.exists(config.notes_outpath) and not args.overwrite:
+            config.notes_outpath = config.notes_outpath.replace(".json", "+.json")
+        with open(config.notes_outpath, 'w', encoding="utf-8") as f:
+            json.dump(notes, f, ensure_ascii=False)
+        print(f"\nVersion notes is saved to:\n{config.notes_outpath}")
 
     ## Setup color legend (and save)
     version_list = list(config.input_folders.keys())
@@ -210,19 +222,28 @@ def main():
             output_path=config.results_outpath.format(version), 
             overwrite=args.overwrite
         )
-
         result_DF["Version"] = version
         result_DF.rename(columns={"PredictedAgeDifference": "PAD", "CorrectedPAD": "PADAC",}, inplace=True)
         result_DF["PAD_abs"] = result_DF["PAD"].abs()
-        result_DF["PADAC_abs"] = result_DF["PADAC"].abs()        
+        result_DF["PADAC_abs"] = result_DF["PADAC"].abs()
+                
         if "Sex" not in result_DF.columns:
             result_DF["Sex"] = ""
-            result_DF.replace({"AgeGroup": {"le-44": "Y", "ge-45": "O"}}, inplace=True)
-        else:
-            result_DF.replace({"AgeGroup": {"all": "", "le-44": "Y", "ge-45": "O"}}, inplace=True)
+        #     result_DF.replace({"AgeGroup": {"le-44": "Y", "ge-45": "O"}}, inplace=True)
+        # else:
+        #     result_DF.replace({"AgeGroup": {"all": "", "le-44": "Y", "ge-45": "O"}}, inplace=True)
         
         result_DF["Group"] = result_DF["AgeGroup"] + result_DF["Sex"]
         result_DF["VerType"] = result_DF["Version"] + "_" + result_DF["Type"]
+
+        if args.custom_bar_x_lab is not None:
+            data_DF = pd.read_csv(config.raw_data_path)
+            data_DF["SID"] = data_DF["BASIC_INFO_ID"].map(lambda x: x.replace("sub-0", ""))
+            temp_DF = force_agesex_cols(DF=result_DF, DF2=data_DF)
+            temp_DF.rename(columns={custom_bar_x_lab: "BarGroup"}, inplace=True)
+            result_DF = pd.merge(
+                result_DF, temp_DF.loc[:, ["SID", "BarGroup"]], on="SID", how="left"
+            )
 
         result_DF_list.append(result_DF)
         print()
@@ -259,11 +280,14 @@ def main():
             stats_DF = pd.concat(stats_DF_list, ignore_index=True)
             stats_DF.to_csv(pad_pairstats_outpath, index=False)
             print(f"\nStats results is saved to:\n{pad_pairstats_outpath}")
+        else:
+            stats_DF = pd.read_csv(pad_pairstats_outpath)
 
         ## Plots:
         for ori_name in feature_orientations:
-            g1_fig_outpath = config.pad_barplot_outpath.format(ori_name, pad_col.replace("_abs", ""))
-            g2_fig_outpath = config.pad_bar_stats_outpath.format(ori_name, pad_col.replace("_abs", ""))
+            suffix = f" (grouped by '{custom_bar_x_lab}')" if args.custom_bar_x_lab is not None else ""
+            g1_fig_outpath = config.pad_barplot_outpath.format(ori_name, pad_col.replace("_abs", "")).replace(".png", f"{suffix}.png")
+            g2_fig_outpath = config.pad_bar_stats_outpath.format(ori_name, pad_col.replace("_abs", "")).replace(".png", f"{suffix}.png")
 
             if not (os.path.exists(g1_fig_outpath) and os.path.exists(g2_fig_outpath)) or args.overwrite:
                 print(f"\nPlotting for {ori_name} ...")
@@ -272,7 +296,8 @@ def main():
                     DF=final_result_DF.query(f"Type == '{ori_name}'"), 
                     pad_col=pad_col, 
                     version_list=version_list, 
-                    color_dict=color_dict
+                    color_dict=color_dict, 
+                    x_lab="Group" if args.custom_bar_x_lab is None else "BarGroup"
                 )
 
                 g2 = plot_bars_with_stats(
