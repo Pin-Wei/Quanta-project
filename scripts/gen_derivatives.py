@@ -586,7 +586,7 @@ def main():
     
     basic_q_features = basic_Q_features()
     st_features = ST_features()
-    domain_approach_mapping = domain_approach_mapping_dict()
+    # domain_approach_mapping = domain_approach_mapping_dict()
 
     pad_type = "PAD_ac" if args.use_padac else "PAD"
     suffix = " (ignore 'All')" if args.ignore_all else ""
@@ -628,17 +628,18 @@ def main():
     if not desc.use_pretrained: 
         for ori_name in desc.feature_orientations: 
             for label in desc.label_list: 
-                group_name = "_".join(label)if desc.sep_sex else label
+                group_name = "_".join(label) if desc.sep_sex else label
                 feature_importances = pd.read_csv(
                     config.feature_path.format(group_name, ori_name), header=None
                 )
                 feature_importances.sort_values(by=1, ascending=False, key=abs, inplace=True)
                 fw = len(feature_importances) * 0.3
+                new_group_name = group_name.replace("le-44", "Y").replace("ge-45", "O")
                 plot_feature_importances(
                     feature_importances=feature_importances, 
                     x_lim=None, # since those values of LGBM are greater than the [-1, 1] range
                     fig_size=(8, fw), 
-                    output_path=config.feature_importance_outpath.format(ori_name[:3], group_name), 
+                    output_path=config.feature_importance_outpath.format(ori_name[:3], new_group_name), 
                     overwrite=args.overwrite
                 )
 
@@ -670,6 +671,7 @@ def main():
     if desc.data_synthetized: 
         for label in desc.label_list: 
             group_name = "_".join(label) if desc.sep_sex else label
+            new_group_name = group_name.replace("le-44", "Y").replace("ge-45", "O")
 
             if desc.sep_sex:
                 age_group, sex = label
@@ -693,7 +695,7 @@ def main():
                 n_rows=len(desc.feature_orientations), 
                 n_cols=num_f_per_ori, 
                 color_dict=color_dicts.real_synth, 
-                output_path=config.real_vs_synth_data_outpath.format(group_name), 
+                output_path=config.real_vs_synth_data_outpath.format(new_group_name), 
                 overwrite=args.overwrite
             )
 
@@ -704,7 +706,7 @@ def main():
                     targ_cols=targeted_features, 
                     shorter_xcol_names=True, 
                     figsize=(12, 4), 
-                    output_path=config.feature_cormat_outpath.format(S_or_R, group_name), 
+                    output_path=config.feature_cormat_outpath.format(S_or_R, new_group_name), 
                     overwrite=args.overwrite
                 )
 
@@ -749,8 +751,7 @@ def main():
     grouped_result_DF = make_grouped_result_DF(long_result_DF, desc, pad_type)
     pad_with_interested_features = []
 
-    for label in desc.label_list:
-        group_name = "_".join(label) if desc.sep_sex else label
+    for group_name in grouped_result_DF.keys():
         sub_result_df = grouped_result_DF[group_name]
         sub_result_df = sub_result_df.merge(
             data_DF.loc[:, ["SID"] + basic_q_features + st_features], 

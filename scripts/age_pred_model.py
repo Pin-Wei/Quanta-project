@@ -143,7 +143,7 @@ class Config:
         self.prepared_data_outpath           = os.path.join(self.out_folder, "prepared_data.csv")
         self.split_ids_outpath               = os.path.join(self.out_folder, "train_and_test_ids.json")
         self.scaler_outpath_format           = os.path.join(self.out_folder, "scaler_{}.pkl")
-        self.feature_selector_outpath_format = os.path.join(self.out_folder, "selector_{}_{}_{}.pkl")
+        self.selector_outpath_format         = os.path.join(self.out_folder, "selector_{}_{}_{}.pkl")
         self.reducer_outpath_format          = os.path.join(self.out_folder, "reducer_{}_{}.pkl")
         self.pc_loadings_outpath_format      = os.path.join(self.out_folder, "PC_loadings_{}_{}.xlsx")
         self.rc_loadings_outpath_format      = os.path.join(self.out_folder, "RC_loadings_{}_{}.xlsx")
@@ -173,14 +173,16 @@ class Config:
                 self.balance_to_num = constants.balance_to_num[self.balancing_groups][self.balancing_method]
             else:
                 self.balance_to_num = args.sample_size
-        
-        if args.split_with_ids is not None:
+
+        if args.testset_ratio is not None:
+            self.split_with_ids = None
+            self.testset_ratio = args.testset_ratio
+        elif args.split_with_ids is not None:
             with open(args.split_with_ids, 'r') as f:
                 self.split_with_ids = json.load(f)
             self.testset_ratio = len(self.split_with_ids["Test"]) / (len(self.split_with_ids["Train"]) + len(self.split_with_ids["Test"]))
         else:
-            self.split_with_ids = None
-            self.testset_ratio = args.testset_ratio
+            raise ValueError("Please specify either --testset_ratio or --split_with_ids")
 
         if args.feature_selection:
             self.feature_transformer = "selector"
@@ -290,12 +292,13 @@ def initialization():
                             help="Whether to separate the data by gender (0: False, 1: True).")
         
         ## Split data into training and testing sets:
-        parser.add_argument("-tsr", "--testset_ratio", type=float, default=0.3, 
-                            help="The ratio of the testing set.")
         parser.add_argument("-sid", "--split_with_ids", type=str, # default=None, 
                             default=os.path.join(os.getcwd(), "..", "outputs", "train_and_test_ids.json"), 
                             help="File path of a dictionary (.json) containing two lists of IDs to be used for splitting the data into training and testing sets. "+
                             "If provided, the testset_ratio will be determined by its length.")
+        parser.add_argument("-tsr", "--testset_ratio", type=float, default=None, 
+                            help="The ratio of the testing set. "+
+                            "If provided, the split_with_ids will be ignored.")
         
         ## Feature engineering:
         parser.add_argument("-nam", "--no_all_mappings", action="store_true", default=False, 
@@ -657,7 +660,7 @@ def use_pretrained_model(X, group_name, ori_name, config, logger):
         with open(reducer_path, 'rb') as f:
             reducer = pickle.load(f)
         X_transformed = reducer.transform(X)
-        config.feature_transformer == "reducer"
+        config.feature_transformer = "reducer"
         selector = None
 
     elif os.path.exists(selector_path):
@@ -665,16 +668,18 @@ def use_pretrained_model(X, group_name, ori_name, config, logger):
         with open(selector_path, 'rb') as f: 
             selector = pickle.load(f)
         X_transformed = selector.transform(X)
-        config.feature_transformer == "selector"
+        config.feature_transformer = "selector"
         reducer = None
 
     else:
         logger.info("Original features are used in the pre-trained model.")
-        reducer, selector = None, None
         used_features = saved_results["FeatureNames"]
-        if X.columns.tolist() != used_features:
+        X_transformed = X.loc[:, used_features]
+        config.feature_transformer = None
+        reducer, selector = None, None
+
+        if list(X_transformed.columns) != used_features:
             raise ValueError("The model was trained on different features than the ones used now.")
-        X_transformed = X
 
     return best_model_name, trained_model, reducer, selector, X_transformed
 
@@ -1100,27 +1105,29 @@ def main():
 
             iter += 1
 
+            logger.info("Filtering features based on the domain and approach ...")
+            X_train_included = filter_features_preliminary(
+                data_dict["X_train"], 
+                domains=ori_content["domains"], 
+                approaches=ori_content["approaches"] , 
+                ori_name=ori_name
+            )
+
+            if X_train_included.empty: 
+                logger.warning("No features are included for the current orientation, the definition may be wrong!!")
+                logger.warning("Unable to train models, pass this iteration ...")
+                record_if_failed.append(f"{ori_name} of {group_name}.")
+                pass
+
             if args.pretrained_model_folder is not None:
+                print("Using the pre-trained model ... This may take a while ... but shortly :-)")
                 logger.info("Using the pre-trained model :-P")
                 best_model_name, trained_model, reducer, selector, X_train_transformed = use_pretrained_model(
-                    data_dict["X_train"], group_name, ori_name, config, logger
+                    X_train_included, group_name, ori_name, config, logger
                 )
+                selected_features = list(X_train_transformed.columns)
                 
             else: # do what supposed to be done
-                logger.info("Filtering features based on the domain and approach ...")
-                X_train_included = filter_features_preliminary(
-                    data_dict["X_train"], 
-                    domains=ori_content["domains"], 
-                    approaches=ori_content["approaches"] , 
-                    ori_name=ori_name
-                )
-
-                if X_train_included.empty: 
-                    logger.warning("No features are included for the current orientation, the definition may be wrong!!")
-                    logger.warning("Unable to train models, skipping this iteration ...")
-                    record_if_failed.append(f"{ori_name} of {group_name}.")
-                    pass
-
                 if config.feature_transformer == "reducer":
                     logger.info("Performing dimensionality reduction ...")
                     reducer = train_and_save_pca(X_train_included, group_name, ori_name, args, config, logger)
@@ -1132,7 +1139,7 @@ def main():
                     y=data_dict["y_train"], 
                     model_names=config.included_models, 
                     select_features=args.feature_selection, 
-                    selector_outpath=config.feature_selector_outpath_format.format(group_name, ori_name, "<model_name>"),
+                    selector_outpath=config.selector_outpath_format.format(group_name, ori_name, "<model_name>"),
                     seed=config.seed, 
                     args=args, 
                     config=config, 
@@ -1144,13 +1151,12 @@ def main():
                 )
                     
             logger.info("Applying the best model to the training set ...")
-            if config.feature_transformer == "selector":
-                selector = results[best_model_name]["feature_selector"] if args.pretrained_model_folder is None else selector
-                if selector is not None:
-                    X_train_selected = selector.transform(X_train_included)
-                    y_pred_train = trained_model.predict(X_train_selected)
-                else:
-                    raise Exception("Feature selection is requested, but the feature selector is not found ...")
+            if args.pretrained_model_folder is not None:
+                y_pred_train = trained_model.predict(X_train_transformed)
+            elif config.feature_transformer == "selector":
+                selector = results[best_model_name]["feature_selector"] 
+                X_train_selected = selector.transform(X_train_included)
+                y_pred_train = trained_model.predict(X_train_selected)
             elif config.feature_transformer == "reducer":
                 y_pred_train = trained_model.predict(X_train_transformed)
             else:
@@ -1189,9 +1195,8 @@ def main():
             else:
                 logger.info("Applying the best model to the testing set ...")
                 if config.feature_transformer == "selector":
-                    if selector is not None:
-                        X_test_selected = selector.transform(data_dict["X_test"])
-                        y_pred_test = trained_model.predict(X_test_selected)
+                    X_test_selected = selector.transform(data_dict["X_test"])
+                    y_pred_test = trained_model.predict(X_test_selected)
                 elif config.feature_transformer == "reducer":
                     X_test_transformed = reducer.transform(data_dict["X_test"])
                     y_pred_test = trained_model.predict(X_test_transformed)
