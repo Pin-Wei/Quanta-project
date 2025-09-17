@@ -8,12 +8,14 @@ import shap
 # from scipy.cluster import hierarchy
 # from scipy.spatial.distance import squareform
 from factor_analyzer import Rotator
+from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.decomposition import PCA
-from sklearn.inspection import permutation_importance
-from sklearn.model_selection import train_test_split
-from sklearn.linear_model import LassoCV, ElasticNetCV
-from sklearn.ensemble import RandomForestRegressor
-from lightgbm import LGBMRegressor
+# from sklearn.inspection import permutation_importance
+# from sklearn.model_selection import train_test_split
+# from sklearn.linear_model import LassoCV, ElasticNetCV
+# from sklearn.ensemble import RandomForestRegressor
+# from lightgbm import LGBMRegressor
+from boruta import BorutaPy
 
 class FeatureReducer:
     def __init__(self, seed, n_iter=100):
@@ -266,9 +268,12 @@ class FeatureReducer:
 
         return n_retained[0]
 
-class FeatureSelector:
-    def __init__(self, method, thresh_method, threshold, explained_ratio, max_feature_num, seed, n_jobs=16):
-        self.method = method
+class FeatureSelector(BaseEstimator, TransformerMixin):
+    def __init__(self, model_name, model, seed, thresh_method, threshold, explained_ratio, max_feature_num, 
+                 use_shap=True, n_jobs=16):
+        self.model_name = model_name
+        self.model = model
+        self.use_shap = use_shap
         self.seed = seed
         self.thresh_method = thresh_method
         self.threshold = threshold
@@ -277,42 +282,49 @@ class FeatureSelector:
         self.min_feature_num = 1 # 10
         self.n_jobs = n_jobs
 
-    def fit(self, X: pd.DataFrame, y):
-        '''
-        Select features based on their importance weights.
-        - see: https://scikit-learn.org/stable/modules/feature_selection.html
-        - also: https://hyades910739.medium.com/%E6%B7%BA%E8%AB%87-tree-model-%E7%9A%84-feature-importance-3de73420e3f2
-
-        Permutation importance: https://scikit-learn.org/stable/modules/permutation_importance.html
-         + handling multicollinearity: https://scikit-learn.org/stable/auto_examples/inspection/plot_permutation_importance_multicollinear.html#sphx-glr-auto-examples-inspection-plot-permutation-importance-multicollinear-py
-         - may not be suitable
-
-        SHAP (SHapley Additive exPlanations): https://shap.readthedocs.io/en/latest/
-        - see 1: https://christophm.github.io/interpretable-ml-book/shapley.html
-        - see 2: https://ithelp.ithome.com.tw/articles/10329606
-        - see 3: https://medium.com/analytics-vidhya/shap-part-1-an-introduction-to-shap-58aa087a460c
-        - see 4: https://medium.com/@msvs.akhilsharma/unlocking-the-power-of-shap-analysis-a-comprehensive-guide-to-feature-selection-f05d33698f77
-        '''
-        ## Check input:
-        assert isinstance(X, pd.DataFrame), "X should be a pandas DataFrame."
-        assert isinstance(y, pd.Series) or isinstance(y, np.ndarray), "y should be a pandas Series or a numpy array."
-        assert X.shape[0] == y.shape[0], "X and y should have the same number of rows."
-        assert (not np.any(np.isnan(X))) and (not np.any(np.isnan(y))), "X and y should not contain NaN values."
-        assert (not np.any(np.isinf(X))) and (not np.any(np.isinf(y))), "X and y should not contain infinite values."
-
+    def fit(self, X: pd.DataFrame, y=None):
         ## Estimate feature importance:
-        if self.method == "LassoCV":
-            importances = LassoCV(
-                cv=5, random_state=self.seed
-            ).fit(X, y).coef_
+        if self.use_shap: # using SHAP (SHapley Additive exPlanations): 
+            '''
+            - https://shap.readthedocs.io/en/latest/
+            - https://christophm.github.io/interpretable-ml-book/shapley.html
+            - https://ithelp.ithome.com.tw/articles/10329606
+            - https://medium.com/analytics-vidhya/shap-part-1-an-introduction-to-shap-58aa087a460c
+            - https://medium.com/@msvs.akhilsharma/unlocking-the-power-of-shap-analysis-a-comprehensive-guide-to-feature-selection-f05d33698f77
+            '''
+            if self.model_name == "ElasticNet":
+                explainer = shap.Explainer(
+                    model=self.model.fit(X, y),
+                    masker=X, # pass a background data matrix instead of a function
+                    algorithm="linear"
+                )
+                shap_values = explainer(X).values
+            else:
+                shap_values = shap.TreeExplainer(
+                    self.model.fit(X, y)
+                ).shap_values(X)
 
-        elif self.method == "ElasticNetCV":
-            importances = ElasticNetCV(
-                l1_ratio=[.1, .5, .7, .9, .95, .99, 1], 
-                cv=5, random_state=self.seed, n_jobs=self.n_jobs
-            ).fit(X, y).coef_
+            feature_imp_values = np.abs(shap_values).mean(axis=0)
+                    
+            if np.isnan(feature_imp_values).any() or np.all(feature_imp_values == 0): # fallback
+                raise ValueError("SHAP values are invalid (NaN or all zero).")
+            
+        elif self.use_permute:
+            raise NotImplementedError
+        
+            # ## Permutation importance: https://scikit-learn.org/stable/modules/permutation_importance.html
+            # X_train, X_test, y_train, y_test = train_test_split(
+            #     X, y, test_size=.2, random_state=self.seed
+            # )
+            # rf_trained = RandomForestRegressor(
+            #     random_state=self.seed, n_jobs=self.n_jobs
+            # ).fit(X_train, y_train)
+            # feature_imp_values = permutation_importance(
+            #     estimator=rf_trained, X=X_test, y=y_test, 
+            #     n_repeats=10, random_state=self.seed, n_jobs=self.n_jobs
+            # ).importances_mean
 
-        elif self.method == "RF-Permute": # permutation importance 
+            # ## + Handling multicollinearity: https://scikit-learn.org/stable/auto_examples/inspection/plot_permutation_importance_multicollinear.html#sphx-glr-auto-examples-inspection-plot-permutation-importance-multicollinear-py
             # dist_matrix = 1 - X.corr(method="spearman").abs()
             # dist_linkage = hierarchy.ward( # compute Ward’s linkage on a condensed distance matrix.
             #     squareform(dist_matrix)
@@ -324,74 +336,40 @@ class FeatureSelector:
             # for idx, cluster_id in enumerate(cluster_ids):
             #     cid_to_fids[cluster_id].append(idx)
             # first_features = [ v[0] for v in cid_to_fids.values() ] # select the first feature in each cluster
-            X_train, X_test, y_train, y_test = train_test_split(
-                # X.iloc[:, first_features], y, test_size=.3, random_state=self.seed
-                X, y, test_size=.2, random_state=self.seed
-            )
-            rf_trained = RandomForestRegressor(
-                random_state=self.seed, n_jobs=self.n_jobs
-            ).fit(X_train, y_train)
-            importances = permutation_importance(
-                estimator=rf_trained, X=X_test, y=y_test, 
-                n_repeats=10, random_state=self.seed, n_jobs=self.n_jobs
-            ).importances_mean
+            # X_train, X_test, y_train, y_test = train_test_split(
+            #     X.iloc[:, first_features], y, test_size=.3, random_state=self.seed
+            # )
+            # rf_trained = RandomForestRegressor(
+            #     random_state=self.seed, n_jobs=self.n_jobs
+            # ).fit(X_train, y_train)
+            # feature_imp_values = permutation_importance(
+            #     estimator=rf_trained, X=X_test, y=y_test, 
+            #     n_repeats=10, random_state=self.seed, n_jobs=self.n_jobs
+            # ).importances_mean
 
-        elif self.method == "LightGBM": # impurity-based feature importance
-            # importances = LGBMRegressor(
-            #     importance_type=["split", "gain"][1], random_state=self.seed
-            # ).fit(X, y).feature_importances_
-            raise NotImplementedError("LightGBM impurity-based feature importance should not be used.")
+        else: # based on their weights or impurities.
+            '''
+            - https://scikit-learn.org/stable/modules/feature_selection.html
+            - https://hyades910739.medium.com/%E6%B7%BA%E8%AB%87-tree-model-%E7%9A%84-feature-importance-3de73420e3f2
+            '''
+            if hasattr(self.model, "coef_"):
+                feature_imp_values = self.model.coef_
+            elif hasattr(self.model, "feature_importances_"):
+                feature_imp_values = self.model.feature_importances_
 
-        elif self.method.endswith("SHAP"): 
-
-            if self.method.startswith("ElaNet"): # ElasticNet-SHAP
-                model = ElasticNetCV(
-                    l1_ratio=[.1, .5, .7, .9, .95, .99, 1], 
-                    cv=5, random_state=self.seed, n_jobs=self.n_jobs
-                ).fit(X, y)
-                explainer = shap.Explainer(
-                    model=model.predict, 
-                    masker=X, # pass a background data matrix instead of a function
-                    algorithm="linear"
-                )
-                shap_values = explainer(X)
-
-            else:
-                X_train, X_test, y_train, y_test = train_test_split(
-                    X, y, test_size=.2, random_state=self.seed
-                )
-                if self.method.startswith("RF"): # RF-SHAP
-                    shap_values = shap.TreeExplainer(
-                        model=RandomForestRegressor(
-                            random_state=self.seed, n_jobs=self.n_jobs
-                        ).fit(X_train, y_train), 
-                    ).shap_values(X_test)
-
-                elif self.method.startswith("LGBM"): # LGBM-SHAP
-                    shap_values = shap.TreeExplainer(
-                        model=LGBMRegressor(
-                            max_depth=3, min_child_samples=5, 
-                            random_state=self.seed, n_jobs=self.n_jobs
-                        ).fit(X_train, y_train)
-                    ).shap_values(X_test)
-
-            importances = np.abs(shap_values).mean(axis=0)
-
-        ## Fallback:
-        if np.isnan(importances).any() or np.all(importances == 0):
-            raise ValueError("SHAP values are invalid (NaN or all zero).")
-
-        ## Selection:
-        feature_importances = pd.Series(importances, index=X.columns).sort_values(ascending=False)
+        ## Sort and assign indices:
+        feature_importance = pd.Series(feature_imp_values, index=X.columns)
+        feature_importance.sort_values(ascending=False, key=abs, inplace=True)
         
+        ## Selection:        
         if self.thresh_method == "explained_ratio":
-            normed_feature_imp = feature_importances / feature_importances.abs().sum()
+            normed_feature_imp = feature_importance / feature_importance.abs().sum()
             cumulative_importances = normed_feature_imp.abs().cumsum()
             num_features = np.argmax(cumulative_importances > self.explained_ratio) + 1
-            selected_feature_imp = feature_importances.head(num_features)
+            selected_feature_imp = feature_importance.head(num_features)
 
         elif self.thresh_method == "fixed_threshold":
-            selected_feature_imp = feature_importances[feature_importances.abs() > self.threshold]
+            selected_feature_imp = feature_importance[feature_importance.abs() > self.threshold]
 
         if self.max_feature_num is not None:
             selected_feature_imp = selected_feature_imp.head(self.max_feature_num)
@@ -408,3 +386,41 @@ class FeatureSelector:
     
     def transform(self, X):
         return X[self.selected_features]
+    
+    def fit_transform(self, X, y=None):
+        return self.fit(X, y).transform(X)
+    
+class BorutaSelector(BaseEstimator, TransformerMixin):
+    def __init__(self, estimator, n_estimators="auto", random_state=None, verbose=0):
+        self.estimator = estimator
+        self.n_estimators = n_estimators
+        self.random_state = random_state
+        self.verbose = verbose
+
+    def fit(self, X, y):
+        self.feature_names_ = X.columns if isinstance(X, pd.DataFrame) else None
+        X_np = X.to_numpy() if isinstance(X, pd.DataFrame) else X
+
+        self.selector = BorutaPy(
+            estimator=self.estimator,
+            n_estimators=self.n_estimators,
+            random_state=self.random_state,
+            verbose=self.verbose
+        )
+        self.selector.fit(X_np, y)
+
+        mask = self.selector.support_
+        if (self.feature_names_ is not None) and (any(mask) == True):
+            self.feature_names_ = np.array(self.feature_names_)[mask]
+
+        return self
+    
+    def transform(self, X):
+        X_np = X.values if isinstance(X, pd.DataFrame) else X
+
+        if self.feature_names_ is not None:
+            X_sel = self.selector.transform(X_np)
+            
+            return pd.DataFrame(X_sel, columns=self.feature_names_, index=X.index)
+        else:
+            return X
