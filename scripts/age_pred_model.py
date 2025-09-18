@@ -216,6 +216,8 @@ class Config:
         if args.by_gender == 0:
             prefix += "_sex-0"
 
+        prefix += f"_tsr-{self.testset_ratio:.1f}"
+
         if args.pretrained_model_folder is not None:
             self.out_folder = os.path.join(self.source_path, "outputs", f"{prefix} ({args.pretrained_model_folder})")
             # self.out_folder = os.path.join(self.source_path, "outputs", f"{prefix}_pre-trained")
@@ -1120,7 +1122,7 @@ def main():
                 pass
 
             if args.pretrained_model_folder is not None:
-                print("Using the pre-trained model ... This may take a while ... but shortly :-)")
+                print(f"Applying pre-trained {ori_name} model on {group_name} :-)")
                 logger.info("Using the pre-trained model :-P")
                 best_model_name, trained_model, reducer, selector, X_train_transformed = use_pretrained_model(
                     X_train_included, group_name, ori_name, config, logger

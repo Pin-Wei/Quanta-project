@@ -111,6 +111,57 @@ def define_arguments():
                         help="Output folder where models trained by LGBMRegressor are stored.")
     return parser.parse_args()
 
+def gen_command_line(args):
+    def _make_notes_from_prefix(prefix): 
+        notes = "Original data" if "original" in prefix else "Balanced data"
+
+        if "age-0" in prefix:
+            if "sex-0" in prefix:
+                notes += " undivided"
+            else:
+                notes += " divided only by age"
+        elif "sex-0" in prefix:
+            notes += " divided only by gender"
+        else:
+            notes += " divided by age and gender"
+
+        ans = input(f"\nIs the predicted data a testing set [0] or the entire dataset [1]?\n")
+        notes += f" ({['testing set', 'training + testing sets'][int(ans)]})"
+
+        return notes
+    
+    print("\nAt least two input folder names are required.")
+    prefix = input("I can generate a command line for you if you provide a common prefix: \n")
+    suffix = input("\nIs there any suffix you want to add? \n")
+
+    if args.version_index == 0:
+        cmd = f"python compare_versions.py -v 0 -ba '{prefix}_sex-0{suffix}' -bs '{prefix}_age-0{suffix}' -bas '{prefix}_age-0_sex-0{suffix}' -un '{prefix}{suffix}'"
+    elif args.version_index == 1:
+        cmd = f"python compare_versions.py -v 1 -m0 '{prefix}_ElasticNet{suffix}' -m1 '{prefix}_CART{suffix}' -m2 '{prefix}_RF{suffix}' -m3 '{prefix}_XGBM{suffix}' -m4 '{prefix}_LGBM{suffix}'"
+    
+    add_notes = input("\nDo you want to add notes? (y/n)\n")
+    if add_notes in ["Y", "y"]:
+        notes = _make_notes_from_prefix(prefix)
+        print(f"\nDefault notes: '{notes}'")
+        change_notes = input("\nDo you want to change the notes? (y/n)\n")
+        if change_notes in ["Y", "y"]:
+            notes = input("\nPlease provide the notes: \n")
+        cmd += f" -n '{notes}'"
+
+    add_prefix = input("\nDo you want to add prefix to the output folder? (y/n)\n")
+    if add_prefix in ["Y", "y"]:
+        prefix_core = prefix[11:] # remove YYYY-MM-DD_ 
+        prefix_core = prefix_core.split(" (")[0] # remove (pretrained_model_folder)
+        print(f"\nDefault prefix: '{prefix_core}'")
+        change_prefix = input("\nDo you want to change the prefix? (y/n)\n")
+        if change_prefix in ["Y", "y"]:
+            prefix_core = input("\nPlease provide the prefix: \n")
+        cmd += f" -p '{prefix_core}'"
+
+    print("\n-- Please check the command line below --\n")
+    print(cmd)
+    print()
+
 def compare_pad_values(V1_abs, V2_abs, independent=False):
     V1_mean, V2_mean = V1_abs.mean(), V2_abs.mean()
     V1_std, V2_std = V1_abs.std(), V2_abs.std()
@@ -170,7 +221,8 @@ def main():
 
     ## Check if at least one input folder is provided
     if len(config.input_folders) < 2:
-        raise ValueError("Please provide at least two input folder.")
+        gen_command_line(args)
+        sys.exit()
     
     ## Create output folder
     os.makedirs(config.output_folder, exist_ok=True)
