@@ -432,7 +432,8 @@ def plot_feature_sunburst(feature_DF_dict, parent_col, label_col, color_dict,
     if (not os.path.exists(output_path)) or overwrite:
         if one_or_many == "one":
             fig = _plot_one_sunburst(
-                feature_DF, parent_col, label_col, color_dict, one_or_many, fig_title
+                feature_DF_dict, # single DataFrame instead of a dict
+                parent_col, label_col, color_dict, one_or_many, fig_title
             )
         else:
             n_cols = 2 if n_cols is None else n_cols

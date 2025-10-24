@@ -9,10 +9,10 @@ import argparse
 import numpy as np
 import pandas as pd
 import seaborn as sns
+import matplotlib.pyplot as plt
 import itertools 
 from datetime import datetime
 from scipy import stats
-import matplotlib.pyplot as plt
 
 from gen_derivatives import (
     Constants, Description, load_model_results, force_agesex_cols
@@ -112,53 +112,54 @@ def define_arguments():
     return parser.parse_args()
 
 def gen_command_line(args):
-    def _make_notes_from_prefix(prefix): 
+    def _make_notes_from_prefix(version, prefix): 
         notes = "Original data" if "original" in prefix else "Balanced data"
 
-        if "age-0" in prefix:
-            if "sex-0" in prefix:
-                notes += " undivided"
+        if version == 1:
+            if "age-0" in prefix:
+                if "sex-0" in prefix:
+                    notes += " undivided"
+                else:
+                    notes += " divided only by age"
+            elif "sex-0" in prefix:
+                notes += " divided only by gender"
             else:
-                notes += " divided only by age"
-        elif "sex-0" in prefix:
-            notes += " divided only by gender"
-        else:
-            notes += " divided by age and gender"
+                notes += " divided by age and gender"
 
         ans = input(f"\nIs the predicted data a testing set [0] or the entire dataset [1]?\n")
         notes += f" ({['testing set', 'training + testing sets'][int(ans)]})"
 
         return notes
     
-    print("\nAt least two input folder names are required.")
-    prefix = input("I can generate a command line for you if you provide a common prefix: \n")
-    suffix = input("\nIs there any suffix you want to add? \n")
+    print("\n>> At least two input folder names are required.")
+    prefix = input(">> I can generate a command line for you if you provide a common prefix: \n")
+    suffix = input("\n>> Is there any suffix you want to add? \n")
 
     if args.version_index == 0:
-        cmd = f"python compare_versions.py -v 0 -ba '{prefix}_sex-0{suffix}' -bs '{prefix}_age-0{suffix}' -bas '{prefix}_age-0_sex-0{suffix}' -un '{prefix}{suffix}'"
+        cmd = f"python compare_versions.py -v 0 -ba '{prefix}sex-0{suffix}' -bs '{prefix}age-0{suffix}' -bas '{prefix}{suffix}' -un '{prefix}age-0_sex-0{suffix}'"
     elif args.version_index == 1:
-        cmd = f"python compare_versions.py -v 1 -m0 '{prefix}_ElasticNet{suffix}' -m1 '{prefix}_CART{suffix}' -m2 '{prefix}_RF{suffix}' -m3 '{prefix}_XGBM{suffix}' -m4 '{prefix}_LGBM{suffix}'"
+        cmd = f"python compare_versions.py -v 1 -m0 '{prefix}ElasticNet{suffix}' -m1 '{prefix}CART{suffix}' -m2 '{prefix}RF{suffix}' -m3 '{prefix}XGBM{suffix}' -m4 '{prefix}LGBM{suffix}'"
     
-    add_notes = input("\nDo you want to add notes? (y/n)\n")
+    add_notes = input("\n>> Do you want to add notes? (y/n)\n")
     if add_notes in ["Y", "y"]:
-        notes = _make_notes_from_prefix(prefix)
-        print(f"\nDefault notes: '{notes}'")
-        change_notes = input("\nDo you want to change the notes? (y/n)\n")
+        notes = _make_notes_from_prefix(args.version_index, prefix)
+        print(f"\n>> Default notes (based on the version and prefix):\n'{notes}'")
+        change_notes = input("\n>> Do you want to change the notes? (y/n)\n")
         if change_notes in ["Y", "y"]:
-            notes = input("\nPlease provide the notes: \n")
+            notes = input("\n>> Please provide the notes: \n")
         cmd += f" -n '{notes}'"
 
-    add_prefix = input("\nDo you want to add prefix to the output folder? (y/n)\n")
+    add_prefix = input("\n>> Do you want to add prefix to the output folder? (y/n)\n")
     if add_prefix in ["Y", "y"]:
         prefix_core = prefix[11:] # remove YYYY-MM-DD_ 
         prefix_core = prefix_core.split(" (")[0] # remove (pretrained_model_folder)
-        print(f"\nDefault prefix: '{prefix_core}'")
-        change_prefix = input("\nDo you want to change the prefix? (y/n)\n")
+        print(f"\n>> Default prefix:\n'{prefix_core}'")
+        change_prefix = input("\n>> Do you want to change the prefix? (y/n)\n")
         if change_prefix in ["Y", "y"]:
-            prefix_core = input("\nPlease provide the prefix: \n")
+            prefix_core = input("\n>> Please provide the prefix: \n")
         cmd += f" -p '{prefix_core}'"
 
-    print("\n-- Please check the command line below --\n")
+    print("\n--- Please check the command line below ---\n")
     print(cmd)
     print()
 
@@ -275,18 +276,11 @@ def main():
             overwrite=args.overwrite
         )
         result_DF["Version"] = version
+        result_DF["VerType"] = result_DF["Version"] + "_" + result_DF["Type"]
+
         result_DF.rename(columns={"PredictedAgeDifference": "PAD", "CorrectedPAD": "PADAC",}, inplace=True)
         result_DF["PAD_abs"] = result_DF["PAD"].abs()
         result_DF["PADAC_abs"] = result_DF["PADAC"].abs()
-                
-        if "Sex" not in result_DF.columns:
-            result_DF["Sex"] = ""
-        #     result_DF.replace({"AgeGroup": {"le-44": "Y", "ge-45": "O"}}, inplace=True)
-        # else:
-        #     result_DF.replace({"AgeGroup": {"all": "", "le-44": "Y", "ge-45": "O"}}, inplace=True)
-        
-        result_DF["Group"] = result_DF["AgeGroup"] + result_DF["Sex"]
-        result_DF["VerType"] = result_DF["Version"] + "_" + result_DF["Type"]
 
         if args.custom_bar_x_lab is not None:
             data_DF = pd.read_csv(config.raw_data_path)
@@ -296,11 +290,22 @@ def main():
             result_DF = pd.merge(
                 result_DF, temp_DF.loc[:, ["SID", "BarGroup"]], on="SID", how="left"
             )
+                
+        if "Sex" not in result_DF.columns:
+            result_DF["Sex"] = ""
+            result_DF.replace({"AgeGroup": {"le-44": "Y", "ge-45": "O"}}, inplace=True)
+            result_DF.replace({"BarGroup": {"le-44": "Y", "ge-45": "O"}}, inplace=True)
+        else:
+            result_DF.replace({"AgeGroup": {"all": "", "le-44": "Y", "ge-45": "O"}}, inplace=True)
+            result_DF.replace({"BarGroup": {"all": "", "le-44": "Y", "ge-45": "O"}}, inplace=True)
+        
+        result_DF["Group"] = result_DF["AgeGroup"] + result_DF["Sex"]
 
         result_DF_list.append(result_DF)
         print()
 
     final_result_DF = pd.concat(result_DF_list, ignore_index=True)
+    final_result_DF.drop_duplicates(inplace=True)
     cols = ["Version", "Type", "Group", "SID", "Age", "PAD_abs", "PADAC_abs"]
     final_result_DF.loc[:, cols].to_csv(config.combined_results_outpath, index=False)
 

@@ -775,24 +775,24 @@ def train_and_evaluate_models(X, y, model_names, select_features, selector_outpa
             )
 
         if select_features:
-            if model_name in ["RF", "XGBM", "LGBM"]: # ensemble tree-based models:
-                feature_selector = BorutaSelector(
-                    estimator=model, 
-                    n_estimators="auto", 
-                    verbose=0, 
-                    random_state=seed
-                )
-            else: # ElasticNet or CART
-                feature_selector = FeatureSelector(
-                    model_name=model_name, 
-                    model=model, 
-                    seed=seed, 
-                    thresh_method=params["fs_thresh_method"], 
-                    threshold=params["fs_threshold"], 
-                    explained_ratio=params["fs_explained_ratio"],
-                    max_feature_num=params["fs_max_feature_num"], 
-                    n_jobs=n_jobs
-                )
+            # if model_name in ["RF", "XGBM", "LGBM"]: # ensemble tree-based models:
+            #     feature_selector = BorutaSelector(
+            #         estimator=model, 
+            #         n_estimators="auto", 
+            #         verbose=0, 
+            #         random_state=seed
+            #     )
+            # else: # ElasticNet or CART
+            feature_selector = FeatureSelector(
+                model_name=model_name, 
+                model=model, 
+                seed=seed, 
+                thresh_method=params["fs_thresh_method"], 
+                threshold=params["fs_threshold"], 
+                explained_ratio=params["fs_explained_ratio"],
+                max_feature_num=params["fs_max_feature_num"], 
+                n_jobs=n_jobs
+            )
 
             return Pipeline([("feature_selector", feature_selector), 
                              ("regressor", model)])

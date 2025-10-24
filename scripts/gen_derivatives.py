@@ -389,7 +389,8 @@ def force_agesex_cols(DF, DF2):
     DF2 = DF2.loc[:, ["SID", "BASIC_INFO_SEX"]].copy(deep=True)
     DF2["Sex"] = DF2["BASIC_INFO_SEX"].replace({1: "M", 2: "F"})
     DF2.drop(columns=["BASIC_INFO_SEX"], inplace=True)
-    DF.drop(columns=["Sex"], inplace=True) # force re-creation
+    if "Sex" in DF.columns:
+        DF.drop(columns=["Sex"], inplace=True) # force re-creation
     DF = DF.merge(DF2, left_on="SID", right_on="SID", how="left")  
     DF["AgeSex"] = DF["AgeGroup"].astype(str) + "_" + DF["Sex"]
 
@@ -511,9 +512,9 @@ def make_feature_DF(ori_name, feature_list, domain_approach_mapping):
                     })
             else: # "FUNCTIONAL"
                 dict_list.append({
-                    "domain": dat_type, # "MEMORY", "MOTOR", or "LANGUAGE"
+                    # "domain": dat_type, # "MEMORY", "MOTOR", or "LANGUAGE"
+                    "domain": task, # "SPEECHCOMP", "WORDNAME", "MST", or "GFORCE"
                     "approach": "MRI", 
-                    # "task": task, # "SPEECHCOMP", "WORDNAME", "MST", or "GFORCE"
                     "feature": feature
                 })
 
@@ -521,9 +522,9 @@ def make_feature_DF(ori_name, feature_list, domain_approach_mapping):
             dat_type, task, method, cond, hemi, region, time_freq_var = feature.split("_")[:7]
             
             dict_list.append({
-                "domain": dat_type, # "MEMORY", "MOTOR", or "LANGUAGE"
+                # "domain": dat_type, # "MEMORY", "MOTOR", or "LANGUAGE"
+                "domain": task, # "EXCLUSION", "OSPAN", "GOFITTS", or "BILPRESS"
                 "approach": "EEG", 
-                # "task": task, # "EXCLUSION", "OSPAN", "GOFITTS", or "BILPRESS"
                 "feature": feature
             })
 
@@ -880,11 +881,13 @@ if __name__ == "__main__":
     #     fp = os.path.join(config.output_folder, config.sunburst_outpath.replace("<FeatureType>", ori_name[:3]))
     #     plot_many_feature_sunbursts(
     #         feature_DF_dict=feature_DF_dict, 
+    #         parent_col=parent_col, 
+    #         label_col=label_col, 
     #         color_dict=color_dicts.sunburst[ori_name], 
     #         fig_title=f"{ori_name[:3]}", 
     #         subplot_annots=subplot_annots, 
+    #         one_or_many="many", 
     #         output_path=fp, 
-    #         num=True, 
     #         overwrite=args.overwrite
     #     )
         
@@ -892,10 +895,12 @@ if __name__ == "__main__":
     #     for group_name, feature_DF in feature_DF_dict.items():
     #         plot_feature_sunburst(
     #             feature_DF=feature_DF, 
+    #             parent_col=parent_col, 
+    #             label_col=label_col, 
     #             color_dict=color_dicts.sunburst[ori_name], 
     #             fig_title=fig_titles[group_name], 
+    #             one_or_many="one", 
     #             output_path=fp.replace(".png", f" ({group_name}).png"), 
-    #             num=True, 
     #             overwrite=args.overwrite
     #         )
 
