@@ -1111,7 +1111,7 @@ def main():
             X_train_included = filter_features_preliminary(
                 data_dict["X_train"], 
                 domains=ori_content["domains"], 
-                approaches=ori_content["approaches"] , 
+                approaches=ori_content["approaches"], 
                 ori_name=ori_name
             )
 

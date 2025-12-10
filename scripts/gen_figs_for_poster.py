@@ -16,6 +16,7 @@ import matplotlib.ticker as ticker
 
 sys.path.append(os.path.join(os.getcwd(), "..", "src"))
 from utils import basic_Q_features, ST_features
+from plotting import plot_real_pred_age
 
 sys.path.append(os.path.join(os.getcwd(), "..", "scripts"))
 from gen_derivatives import Constants, Description, load_model_results, force_agesex_cols
@@ -73,7 +74,7 @@ def load_result_df(custom_bar_x_lab):
 
     return desc, result_DF
 
-def compare_versions(result_DF, feature_orientations, version_list):
+def compare_approachs(result_DF, feature_orientations, version_list):
     stats_DF_list = []
 
     for pad_type in ["PAD", "PADAC"]:
@@ -123,8 +124,8 @@ def compare_modalities(result_DF, feature_orientations, version_list):
                     
     return pd.concat(stats_DF_list, ignore_index=True)
 
-def plot_comparison_bars(result_DF, stats_DF, out_file, fig_type):
-    def _version_per_pad():
+def plot_comparison_bars(result_DF, stats_DF, out_file, fig_type, overwrite=False):
+    def _approach_per_pad():
         g = sns.catplot(
             data=result_DF, x="BarGroup", y="value", col="Type", kind="bar", errorbar="se", sharex=False, 
             hue="Version", hue_order=["Y", "O"], palette=sns.color_palette("Set2", 2), 
@@ -288,15 +289,16 @@ def plot_comparison_bars(result_DF, stats_DF, out_file, fig_type):
         g.set_xlabels("")
         g.set_ylabels("")
 
-    sns.set_style("whitegrid", {'grid.linestyle': '--'})
-    if fig_type == "_version_both_pads":
-        _version_per_pad()
-    elif fig_type == "version_both_pads":
-        _version_both_pads()
-    elif fig_type == "modalities_per_pad":
-        _modalities_per_pad()
-    elif fig_type == "modalities_both_pads":
-        _modalities_both_pads()
+    if not os.path.exists(out_file) or overwrite:
+        sns.set_style("whitegrid", {'grid.linestyle': '--'})
+        if fig_type == "_version_both_pads":
+            _approach_per_pad()
+        elif fig_type == "version_both_pads":
+            _version_both_pads()
+        elif fig_type == "modalities_per_pad":
+            _modalities_per_pad()
+        elif fig_type == "modalities_both_pads":
+            _modalities_both_pads()
 
 def make_df_for_cormat(result_DF, data_DF):
     DF_Y = result_DF.query("Version == 'ByAge' & AgeGroup == 'Y'")
@@ -318,25 +320,26 @@ def make_df_for_cormat(result_DF, data_DF):
 
     return wide_df_dict
 
-def plot_corr_mat(DF, targ_cols, out_file):
-    targ_df = DF.loc[:, targ_cols]
-    cormat = targ_df.corr()
-    mask = np.zeros_like(cormat)
-    mask[np.triu_indices_from(mask)] = True
-    
-    sns.set_theme(style='white', font_scale=1.2)
-    plt.figure(figsize=(4, 3), dpi=200)
-    g = sns.heatmap(
-        cormat, mask=mask, # square=True, 
-        vmin=-1, vmax=1, linewidth=.5, cmap="RdBu_r", cbar=False, 
-        annot=True, fmt = ".2f", annot_kws={"size": 16}, 
-    )
-    plt.tight_layout()
-    plt.savefig(out_file)
-    print(f"\nFigure saved: {out_file}")
-    plt.close()
+def plot_corr_mat(DF, targ_cols, out_file, overwrite=False):
+    if not os.path.exists(out_file) or overwrite:
+        targ_df = DF.loc[:, targ_cols]
+        cormat = targ_df.corr()
+        mask = np.zeros_like(cormat)
+        mask[np.triu_indices_from(mask)] = True
+        
+        sns.set_theme(style='white', font_scale=1.2)
+        plt.figure(figsize=(4, 3), dpi=200)
+        g = sns.heatmap(
+            cormat, mask=mask, # square=True, 
+            vmin=-1, vmax=1, linewidth=.5, cmap="RdBu_r", cbar=False, 
+            annot=True, fmt = ".2f", annot_kws={"size": 16}, 
+        )
+        plt.tight_layout()
+        plt.savefig(out_file)
+        print(f"\nFigure saved: {out_file}")
+        plt.close()
 
-def plot_corwith_mat(DF, x_cols, y_cols, out_file, fig_size):
+def plot_corwith_mat(DF, x_cols, y_cols, y_title, out_file, fig_size, overwrite=False):
     def _def_feature_names(y_title):
         return {
             "questionnaire": [
@@ -401,31 +404,32 @@ def plot_corwith_mat(DF, x_cols, y_cols, out_file, fig_size):
         annot_mat = cormat.map(lambda x: f"{x:.2f}") * q_mask.reindex_like(cormat)
         return annot_mat.fillna("--")
     
-    cormat = pd.DataFrame(index=y_cols, columns=x_cols, dtype=float)
-    p_mat = pd.DataFrame(index=y_cols, columns=x_cols, dtype=str)
-    for t1 in y_cols:
-        for t2 in x_cols:
-            targ_df = DF[[t1, t2]].dropna()
-            cormat.loc[t1, t2], p_mat.loc[t1, t2] = pearsonr(targ_df[t1], targ_df[t2])
-    p_stacked = p_mat.stack()
-    annot_mat = _create_annot_mat(cormat, p_stacked)
-    mask = None
-    
-    sns.set_theme(style='white', font_scale=1.1)
-    plt.figure(figsize=fig_size, dpi=200)
-    g = sns.heatmap(
-        cormat, mask=mask, square=False, 
-        vmin=-1, vmax=1, linewidth=.5, cmap="RdBu_r", cbar=False, 
-        # cbar=True, cbar_kws={"shrink": 0.5, "label": "$r$"}, 
-        annot=pd.DataFrame(annot_mat), fmt = "", annot_kws={"size": 18}, 
-        xticklabels=x_cols, yticklabels=_def_feature_names(y_title)
-    )
-    g.set(xlabel="", ylabel="")
-    g.tick_params(axis="both", which="major", labelsize=20)
-    plt.tight_layout()
-    plt.savefig(out_file)
-    print(f"\nFigure saved: {out_file}")
-    plt.close()
+    if not os.path.exists(out_file) or overwrite:
+        cormat = pd.DataFrame(index=y_cols, columns=x_cols, dtype=float)
+        p_mat = pd.DataFrame(index=y_cols, columns=x_cols, dtype=str)
+        for t1 in y_cols:
+            for t2 in x_cols:
+                targ_df = DF[[t1, t2]].dropna()
+                cormat.loc[t1, t2], p_mat.loc[t1, t2] = pearsonr(targ_df[t1], targ_df[t2])
+        p_stacked = p_mat.stack()
+        annot_mat = _create_annot_mat(cormat, p_stacked)
+        mask = None
+        
+        sns.set_theme(style='white', font_scale=1.1)
+        plt.figure(figsize=fig_size, dpi=200)
+        g = sns.heatmap(
+            cormat, mask=mask, square=False, 
+            vmin=-1, vmax=1, linewidth=.5, cmap="RdBu_r", cbar=False, 
+            # cbar=True, cbar_kws={"shrink": 0.5, "label": "$r$"}, 
+            annot=pd.DataFrame(annot_mat), fmt = "", annot_kws={"size": 18}, 
+            xticklabels=x_cols, yticklabels=_def_feature_names(y_title)
+        )
+        g.set(xlabel="", ylabel="")
+        g.tick_params(axis="both", which="major", labelsize=20)
+        plt.tight_layout()
+        plt.savefig(out_file)
+        print(f"\nFigure saved: {out_file}")
+        plt.close()
 
 if __name__ == "__main__":
     const = Constants()
@@ -433,93 +437,124 @@ if __name__ == "__main__":
     st_features = ST_features()
 
     for model_type in ["ElasticNet", "CART", "RF", "XGBM", "LGBM"]:
-        out_path = os.path.join("..", "derivatives", "2025-11-12 Psychonomic poster", model_type)
-        os.makedirs(out_path, exist_ok=True)
-
-        ## Define arguments
-        sys.argv = [
-            "compare_versions.py", 
-            "-v", "0", 
-            "-ba", f"2025-09-17_original_sex-0_{model_type}", 
-            "-un", f"2025-09-17_original_age-0_sex-0_{model_type}", 
-            "-cbg", "0"
-        ]
-        args = define_arguments()
-        args.ignore_all = False
-        custom_bar_x_lab = "AgeGroup"
-
-        config = Config(args)    
-        version_list = list(config.input_folders.keys()) # ["ByAge", "Undivided"]
-
-        ## Load results:
-        desc, result_DF = load_result_df(custom_bar_x_lab)
-        feature_orientations = result_DF["Type"].unique()
-
-        melted_result_DF = (
-            result_DF
-            .loc[:, ["Version", "Type", "BarGroup", "SID", "PAD_abs", "PADAC_abs"]]
-            .melt(id_vars=["Version", "Type", "BarGroup", "SID"], 
-                  value_vars=["PAD_abs", "PADAC_abs"], 
-                  var_name="PAD_type")
-        )
-
-        ## Bar plots:
-        ## Test if an age-stratified approach improves prediction accuracy:
-        stats_versions_DF = compare_versions(result_DF, feature_orientations, version_list)
-        stats_versions_DF.to_csv(os.path.join(out_path, "compare_versions_stats.csv"), index=False)
-
-        for pad_type in ["PAD", "PADAC"]:
-            plot_comparison_bars(
-                result_DF=melted_result_DF.query(f"PAD_type == '{pad_type}_abs'"), 
-                stats_DF=stats_versions_DF.query(f"PAD_type == '{pad_type}'"), 
-                out_file=os.path.join(out_path, f"compare_versions_{pad_type}_bars.png"), 
-                fig_type="_version_both_pads"
-            )
-
-        # melted_result_DF["GroupxPAD"] = melted_result_DF["BarGroup"].astype(str) + "_" + melted_result_DF["var"]
-        # stats_versions_DF["GroupxPAD"] = stats_versions_DF["Group"] + "_" + stats_versions_DF["PAD_type"]
-        # plot_comparison_bars( ... , fig_type="version_both_pads")
-
-        ## Compare models trained using features in specific modalities:
-        stats_modalities_DF = compare_modalities(result_DF, feature_orientations, version_list)
-        stats_modalities_DF.to_csv(os.path.join(out_path, "compare_modalities_stats.csv"), index=False)
         
-        melted_result_DF["VerxGroup"] = melted_result_DF["Version"] + "_" + melted_result_DF["BarGroup"].astype(str)
+        for test_or_all, by_age_out_path, undivided_out_path in zip(
+            ["Testing", "Entire"], 
+            [f"2025-09-17_original_sex-0_{model_type}", 
+             f"2025-09-17_original_sex-0 (2025-09-17_original_sex-0_{model_type})"], 
+            [f"2025-09-17_original_age-0_sex-0_{model_type}", 
+             f"2025-10-07_original_age-0_sex-0_tsr-0.0 (2025-09-17_original_age-0_sex-0_{model_type})"]
+        ):
+            out_path = os.path.join("..", "derivatives", "2025-11-12 Psychonomic poster", model_type, test_or_all)
+            os.makedirs(out_path, exist_ok=True)
 
-        for pad_type in ["PAD", "PADAC"]:
-            plot_comparison_bars(
-                result_DF=melted_result_DF.query(f"PAD_type == '{pad_type}_abs'"), 
-                stats_DF=stats_modalities_DF.query(f"PAD_type == '{pad_type}'"), 
-                out_file=os.path.join(out_path, f"compare_modalities_{pad_type}_bars.png"), 
-                fig_type="modalities_per_pad"
+            ## Define arguments
+            sys.argv = [
+                "compare_versions.py", 
+                "-v", "0", 
+                "-ba", by_age_out_path, 
+                "-un", undivided_out_path, 
+                "-cbg", "0"
+            ]
+            args = define_arguments()
+            args.ignore_all = False
+            args.overwrite = False
+            custom_bar_x_lab = "AgeGroup"
+
+            config = Config(args)    
+            version_list = list(config.input_folders.keys()) # ["ByAge", "Undivided"]
+
+            ## Load results:
+            desc, result_DF = load_result_df(custom_bar_x_lab)
+            feature_orientations = result_DF["Type"].unique()
+
+            melted_result_DF = (
+                result_DF
+                .loc[:, ["Version", "Type", "BarGroup", "SID", "PAD_abs", "PADAC_abs"]]
+                .melt(id_vars=["Version", "Type", "BarGroup", "SID"], 
+                    value_vars=["PAD_abs", "PADAC_abs"], 
+                    var_name="PAD_type")
             )
 
-        ## Correlation matrices:
-        data_DF = pd.read_csv(config.raw_data_path)
-        data_DF["SID"] = data_DF["BASIC_INFO_ID"].map(lambda x: x.replace("sub-0", ""))
+            ## Scatter plots:
+            for version in version_list:
+                for ori_name in feature_orientations:
+                    df_temp = result_DF.query(f"Version == '{version}' & Type == '{ori_name}'")
+                    df1 = df_temp.loc[:, ["Age", "PredictedAge"]]
+                    df1.insert(1, "pad_type", "Raw")
+                    df2 = df_temp.loc[:, ["Age", "CorrectedPredictedAge"]]
+                    df2.insert(1, "pad_type", "AC")
+                    df2.rename(columns={"CorrectedPredictedAge": "PredictedAge"}, inplace=True)
+                    plot_real_pred_age(
+                        DF=pd.concat([df1, df2], axis=0), 
+                        y_lab="PredictedAge", 
+                        color_hue="pad_type", 
+                        color_dict={"Raw": "#00BFFF", "AC":  "#FF1493"}, 
+                        output_path= os.path.join(out_path, f"scatter_real_pred_age_{version}_{ori_name}.png"),
+                        overwrite=args.overwrite
+                    )
 
-        wide_df_dict = make_df_for_cormat(result_DF, data_DF)
+            ## Bar plots:
+            ## Test if an age-stratified approach improves prediction accuracy:
+            stats_versions_DF = compare_approachs(result_DF, feature_orientations, version_list)
+            stats_versions_DF.to_csv(os.path.join(out_path, "compare_versions_stats.csv"), index=False)
 
-        for pad_type in ["PAD", "PADAC"]:
-            for group_name in ["Y", "O", "Y&O"]:
-
-                ## Among PAC(AC) values:
-                plot_corr_mat(
-                    DF=wide_df_dict[pad_type][group_name], 
-                    targ_cols=sorted(desc.feature_oris), 
-                    out_file=os.path.join(out_path, f"cormat_{pad_type}_{group_name}.png")
+            for pad_type in ["PAD", "PADAC"]:
+                plot_comparison_bars(
+                    result_DF=melted_result_DF.query(f"PAD_type == '{pad_type}_abs'"), 
+                    stats_DF=stats_versions_DF.query(f"PAD_type == '{pad_type}'"), 
+                    out_file=os.path.join(out_path, f"compare_versions_{pad_type}_bars.png"), 
+                    fig_type="approach_per_pad", 
+                    overwrite=args.overwrite
                 )
 
-                ## Correlation with questionnaire / standardized test features:
-                for y_title, y_cols, fig_size in zip(
-                        ["questionnaire", "standardized test"], 
-                        [basic_q_features, st_features], 
-                        [(12, 11), (8, 7)]
-                    ):
-                    plot_corwith_mat(
+            # melted_result_DF["GroupxPAD"] = melted_result_DF["BarGroup"].astype(str) + "_" + melted_result_DF["var"]
+            # stats_versions_DF["GroupxPAD"] = stats_versions_DF["Group"] + "_" + stats_versions_DF["PAD_type"]
+            # plot_comparison_bars( ... , fig_type="version_both_pads")
+
+            ## Compare models trained using features in specific modalities:
+            stats_modalities_DF = compare_modalities(result_DF, feature_orientations, version_list)
+            stats_modalities_DF.to_csv(os.path.join(out_path, "compare_modalities_stats.csv"), index=False)
+            
+            melted_result_DF["VerxGroup"] = melted_result_DF["Version"] + "_" + melted_result_DF["BarGroup"].astype(str)
+
+            for pad_type in ["PAD", "PADAC"]:
+                plot_comparison_bars(
+                    result_DF=melted_result_DF.query(f"PAD_type == '{pad_type}_abs'"), 
+                    stats_DF=stats_modalities_DF.query(f"PAD_type == '{pad_type}'"), 
+                    out_file=os.path.join(out_path, f"compare_modalities_{pad_type}_bars.png"), 
+                    fig_type="modalities_per_pad"
+                )
+
+            ## Correlation matrices:
+            data_DF = pd.read_csv(config.raw_data_path)
+            data_DF["SID"] = data_DF["BASIC_INFO_ID"].map(lambda x: x.replace("sub-0", ""))
+
+            wide_df_dict = make_df_for_cormat(result_DF, data_DF)
+
+            for pad_type in ["PAD", "PADAC"]:
+                for group_name in ["Y", "O", "Y&O"]:
+
+                    ## Among PAC(AC) values:
+                    plot_corr_mat(
                         DF=wide_df_dict[pad_type][group_name], 
-                        x_cols=sorted(desc.feature_oris), 
-                        y_cols=y_cols, 
-                        out_file=os.path.join(out_path, f"cormat_{pad_type}_{y_title}_{group_name}.png"), 
-                        fig_size=fig_size
+                        targ_cols=sorted(desc.feature_oris), 
+                        out_file=os.path.join(out_path, f"cormat_{pad_type}_{group_name}.png"), 
+                        overwrite=args.overwrite
                     )
+
+                    ## Correlation with questionnaire / standardized test features:
+                    for y_title, y_cols, fig_size in zip(
+                            ["questionnaire", "standardized test"], 
+                            [basic_q_features, st_features], 
+                            [(12, 11), (8, 7)]
+                        ):
+                        plot_corwith_mat(
+                            DF=wide_df_dict[pad_type][group_name], 
+                            x_cols=sorted(desc.feature_oris), 
+                            y_cols=y_cols, 
+                            y_title=y_title, 
+                            out_file=os.path.join(out_path, f"cormat_{pad_type}_{y_title}_{group_name}.png"), 
+                            fig_size=fig_size, 
+                            overwrite=args.overwrite
+                        )
