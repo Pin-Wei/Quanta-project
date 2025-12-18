@@ -11,7 +11,7 @@ import pingouin as pg
 
 sys.path.append(os.path.join(os.getcwd(), "..", "src"))
 from plotting import (
-    plot_real_pred_age, plot_corr_with_stats, plot_real_syn_data, 
+    plot_real_pred_age, plot_corr_with_stats, plot_multiple_corr_with_stats, plot_real_syn_data, 
     plot_pad_bars, plot_feature_importances, plot_cormat, plot_feature_sunburst, 
     plot_color_legend
 )
@@ -42,6 +42,7 @@ class Config:
         # self.feature_df_outpath         = os.path.join(self.output_folder, "[table] selected features.csv")
         self.feature_importance_outpath = os.path.join(self.output_folder, "[bar] {} feature importances ('{}').png")
         self.pred_vs_real_age_outpath   = os.path.join(self.output_folder, "[scatter] predicted vs real age ({}).png")
+        self.residual_regress_outpath   = os.path.join(self.output_folder, "[regress] {}PAD x real age.png")
         self.real_vs_synth_data_outpath = os.path.join(self.output_folder, "[hist] distributions of real and synthetic data in '{}'.png")
         self.feature_cormat_outpath     = os.path.join(self.output_folder, "[cormat] between features of {} data in '{}'.png")
         self.pad_barplot_outpath        = os.path.join(self.output_folder, "[bar] PAD values{}.png")
@@ -66,8 +67,8 @@ class Constants:
             "Model", "NumberOfFeatures"
         ]
         self.pad_bar_y_lims = [
-            {"STR": 9, "BEH": 11, "FUN": 14, "ALL": 11}, 
-            {"STR": 14, "BEH": 14, "FUN": 14, "ALL": 14}
+            {"STR": 9, "BEH": 11, "FUN": 14, "ST": np.nan, "ALL": 11}, 
+            {"STR": 14, "BEH": 14, "FUN": 14, "ST": 14, "ALL": 14}
         ][1]
         
 class Description:
@@ -97,7 +98,10 @@ class Description:
             ["STRUCTURE", "BEH", "FUNCTIONAL"] if args.ignore_all
             else desc_json["FeatureOrientations"]
         )
-        self.feature_oris = [ o[:3] for o in self.feature_orientations ]
+        if any( char.isdigit() for char in self.feature_orientations[0] ): 
+            self.feature_oris = self.feature_orientations
+        else:
+            self.feature_oris = [ o[:3] for o in self.feature_orientations ]
         self.traintest = (
             True if desc_json["TestsetRatio"] != 0 
             else False
@@ -265,7 +269,10 @@ def load_model_results(config, desc, const, output_path, overwrite=False):
         processed_results = pd.DataFrame({ 
             k: v for k, v in results.items() if k in cols
         })
-        processed_results.insert(0, "Type", ori_name[:3])
+        if any(char.isdigit() for char in ori_name):
+            processed_results.insert(0, "Type", ori_name)
+        else:
+            processed_results.insert(0, "Type", ori_name[:3])
         if sep_sex:
             age_group, sex = label
             processed_results.insert(2, "AgeGroup", {"all": "", "le-44": "Y", "ge-45": "O"}[age_group])
@@ -314,7 +321,10 @@ def load_model_results(config, desc, const, output_path, overwrite=False):
                     train_results = _process_results(results, const.train_result_cols, label, ori_name)
                     train_results_list.append(train_results)
 
-                selected_features[ori_name[:3]][group_name] = results["FeatureNames"]
+                if any(char.isdigit() for char in ori_name):
+                    selected_features[ori_name][group_name] = results["FeatureNames"]
+                else:
+                    selected_features[ori_name[:3]][group_name] = results["FeatureNames"]
 
     result_DF = pd.concat(main_results_list, ignore_index=True)
     result_DF.insert(1, "SID", result_DF[desc.sid_name].map(lambda x: x.replace("sub-0", "")))
@@ -643,7 +653,7 @@ def main():
                     output_path=config.feature_importance_outpath.format(ori_name[:3], new_group_name), 
                     overwrite=args.overwrite
                 )
-
+    
     ## Plot the relationship between real and predicted ages:
     for ori_name in desc.feature_oris:           
         df_temp = combined_results_DF.query("Type == @ori_name")
@@ -661,6 +671,15 @@ def main():
             output_path= config.pred_vs_real_age_outpath.format(ori_name),
             overwrite=args.overwrite
         )
+    
+    plot_multiple_corr_with_stats(
+        DF=combined_results_DF, 
+        x_lab="Age", 
+        y_lab="CorrectedPAD", 
+        z_lab="Type", 
+        output_path=config.residual_regress_outpath.format("corrected "),
+        overwrite=args.overwrite
+    )
 
     plot_color_legend(
         color_dict=color_dicts.pred_type, 

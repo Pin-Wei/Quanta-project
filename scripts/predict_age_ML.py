@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 
 import os
 import sys
@@ -29,6 +29,7 @@ from xgboost import XGBRegressor
 sys.path.append(os.path.join(os.getcwd(), "..", "src"))
 from data_preparing import DataManager
 from feature_engineering import FeatureReducer, FeatureSelector, BorutaSelector
+from utils import ST_features
 
 ## Classes: ===========================================================================
 
@@ -74,30 +75,48 @@ class Constants:
         }
 
         ## The correspondence between domains and approaches:
-        self.domain_approach_mapping = { 
-            "STRUCTURE": {
-                "domains": ["STRUCTURE"],
-                "approaches": ["MRI"]
-            },
-            "BEH": {
-                "domains": ["MOTOR", "MEMORY", "LANGUAGE"],
-                "approaches": ["BEH"]
-            },
-            "FUNCTIONAL": {
-                "domains": ["MOTOR", "MEMORY", "LANGUAGE"],
-                "approaches": ["EEG", "MRI"]
+        if args.standardize_tests:
+            st_features = ST_features()
+            st_features_to_drop = [
+                [f"LANGUAGE_ST_SCALED_{f1}", f"MEMORY_ST_SCALED_{f2}", f"MOTOR_ST_SCALED_{f3}"]
+                for (f1, f2, f3) in list(product(
+                    ["SIMILARITY", "VOCABULARY", "INFORMATION", "SUM"], 
+                    ["AudImm", "VisImm", "ImmMem", "WorMem", "LogMemI", "FacI", "VerPairI", "FamPicI", "LetNumSeq", "SpaForward", "SpaBackward", "SpaTotal"], 
+                    ["FineMotor", "Balance", "ProcessingSpeed"]
+                ))
+            ]
+            self.domain_approach_mapping = {}
+            for x, (f1, f2, f3) in enumerate(st_features_to_drop):
+                self.domain_approach_mapping[f"ST-{x+1}"] = {
+                    "domains": [ f for f in st_features if f not in (f1, f2, f3) ], 
+                    "approaches": [""]
+                }
+        else:
+            self.domain_approach_mapping = { 
+                "STRUCTURE": {
+                    "domains": ["STRUCTURE"],
+                    "approaches": ["MRI"]
+                },
+                "BEH": {
+                    "domains": ["MOTOR", "MEMORY", "LANGUAGE"],
+                    "approaches": ["BEH"]
+                },
+                "FUNCTIONAL": {
+                    "domains": ["MOTOR", "MEMORY", "LANGUAGE"],
+                    "approaches": ["EEG", "MRI"]
+                }
             }
-        }
-        self.all_domain_approach_mapping = {
-            "ALL": {
-                "domains": ["STRUCTURE", "MOTOR", "MEMORY", "LANGUAGE"], 
-                "approaches": ["MRI", "BEH", "EEG"]
+            self.all_domain_approach_mapping = {
+                "ALL": {
+                    "domains": ["STRUCTURE", "MOTOR", "MEMORY", "LANGUAGE"], 
+                    "approaches": ["MRI", "BEH", "EEG"]
+                }
             }
-        }
-        if not args.no_all_mappings:
-            self.domain_approach_mapping.update(self.all_domain_approach_mapping)
-        elif args.only_all_mapping:
-            self.domain_approach_mapping = self.all_domain_approach_mapping
+            if not args.no_all_mappings:
+                self.domain_approach_mapping.update(self.all_domain_approach_mapping)
+
+            elif args.only_all_mapping:
+                self.domain_approach_mapping = self.all_domain_approach_mapping
 
         ## The names of models to evaluate:
         self.model_names = [ 
@@ -187,7 +206,7 @@ class Config:
         if args.feature_selection:
             self.feature_transformer = "selector"
             self.fs_thresh_method = ["fixed_threshold", "explained_ratio"][args.fs_thresh_method]
-        elif not args.no_pca: # default
+        elif args.apply_pca: 
             self.feature_transformer = "reducer"
         else:
             self.feature_transformer = None
@@ -216,7 +235,10 @@ class Config:
         if args.by_gender == 0:
             prefix += "_sex-0"
 
-        prefix += f"_tsr-{self.testset_ratio:.1f}"
+        # prefix += f"_tsr-{self.testset_ratio:.1f}"
+
+        if args.standardize_tests:
+            prefix += "_ST"
 
         if args.pretrained_model_folder is not None:
             self.out_folder = os.path.join(self.source_path, "outputs", f"{prefix} ({args.pretrained_model_folder})")
@@ -307,8 +329,10 @@ def initialization():
                             help="Not to include 'All' domain-approach mappings for feature selection.")
         parser.add_argument("-oam", "--only_all_mapping", action="store_true", default=False, 
                             help="Include only 'All' domain-approach mappings for feature selection.")
-        parser.add_argument("--no_pca", action="store_true", default=False, 
-                            help="Do not use PCA for feature reduction.")
+        parser.add_argument("-st", "--standardize_tests", action="store_true", default=False, 
+                            help="Use only the standardized test scores as features.")
+        parser.add_argument("--apply_pca", action="store_true", default=False, 
+                            help="Apply PCA for feature reduction.")
         parser.add_argument("-rhcf", "--remove_highly_correlated_features", action="store_true", default=False, 
                             help="Remove highly correlated features before feature reduction (PCA).")
         parser.add_argument("-fs", "--feature_selection", action="store_true", default=False, 
@@ -326,7 +350,7 @@ def initialization():
         parser.add_argument("-pmf", "--pretrained_model_folder", type=str, default=None, 
                             help="The folder where the pre-trained model files (.pkl) are stored.")
         parser.add_argument("-m", "--training_model", type=int, default=None, 
-                            help="The type of the model to be used for training (0: 'ElasticNet', 1: 'RF', 2: 'CART', 3: 'LGBM', 4: 'XGBM').")
+                            help="The type of the model to be used for training (0: 'ElasticNet', 1: 'RF', 2: 'CART', 3: 'XGBM', 4: 'LGBM').")
 
         ## Age correction:
         parser.add_argument("-acm", "--age_correction_method", type=int, default=0, 
@@ -488,7 +512,7 @@ def prepare_dataset(args, constants, config, logger):
     DF_prepared = filter_features_preliminary(
         DF_prepared, 
         domains=["STRUCTURE", "MOTOR", "MEMORY", "LANGUAGE"], 
-        approaches=["MRI", "BEH", "EEG"], 
+        approaches=["MRI", "BEH", "EEG"], # , "ST"
         ori_name=None
     )
 
