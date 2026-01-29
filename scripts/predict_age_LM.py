@@ -19,10 +19,10 @@ from utils import platform_features
 
 class Config:
     def __init__(self, args):
-        self.terms_included = ["linear_only", "with_interaction"][args.terms_included]
+        self.terms_included = ["linear-only", "with-interaction"][args.terms_included]
         self.root_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
         self.raw_data_path = os.path.join(self.root_dir, "data", "rawdata", "DATA_ses-01_2025-05-29.csv")
-        self.output_dir = os.path.join(self.root_dir, "outputs", f"{datetime.today().strftime('%Y-%m-%d')}_platform")
+        self.output_dir = os.path.join(self.root_dir, "outputs", f"{datetime.today().strftime('%Y-%m-%d')}_platform_{self.terms_included}")
         if not getattr(args, "overwrite", False):
             while os.path.exists(self.output_dir):
                 self.output_dir += "+"
@@ -31,9 +31,9 @@ class Config:
         self.data_path = os.path.join(self.output_dir, "data.csv")
         self.loocv_coefs_path = os.path.join(self.output_dir, "loocv_coefs.csv")
         self.loocv_performance_path = os.path.join(self.output_dir, "loocv_performance.json")
-        # self.model_coefs_path = os.path.join(self.output_dir, "model_coefs.csv")
-        # self.model_summ_json_path = os.path.join(self.output_dir, "model_summary.json")
-        # self.model_summ_txt_path = os.path.join(self.output_dir, "model_summary.txt")
+        self.model_coefs_path = os.path.join(self.output_dir, "model_coefs.csv")
+        self.model_summ_json_path = os.path.join(self.output_dir, "model_summary.json")
+        self.model_summ_txt_path = os.path.join(self.output_dir, "model_summary.txt")
 
 def define_arguments():
     parser = argparse.ArgumentParser(description='''
@@ -97,7 +97,7 @@ def build_design_matrix(DF, config, type=["train", "test"][0], mu=None, sigma=No
     X = DF.loc[:, config.selected_features] # linear terms
     X.rename(columns=_rename_features, inplace=True)
 
-    if config.terms_included == "with_interaction":
+    if config.terms_included == "with-interaction":
         for i, xi in enumerate(X.columns):
             for j, xj in enumerate(X.columns):
                 if j < i:
@@ -204,6 +204,11 @@ if __name__ == "__main__":
     save_config(config)
 
     run_loocv(DF, config)
+
+    X, mu, sigma = build_design_matrix(DF, config, type="train")
+    y = DF["Age"].values
+    model = sm.OLS(y, X).fit()
+    save_model_summ(model, config)
 
 
 
