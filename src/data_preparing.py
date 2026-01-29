@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 
 import os
 import re
@@ -25,8 +25,6 @@ class DataManager:
         DF = self._convert_to_mean_cols(DF)
         self.DF = DF
 
-        return self
-
     def make_data_balanced(self, method, balancing_groups, age_bin_dict, balance_to_num, seed, out_dir=None):
         self.balancing_method = method
         self.balancing_groups = balancing_groups
@@ -38,8 +36,6 @@ class DataManager:
         DF_imputed = self._fill_missing_by_group(DF_)
         DF_balanced = self._balancing_each_group(DF_imputed, out_dir=out_dir)
         self.DF_balanced = DF_balanced
-        
-        return self
 
     def _load_from_file(self):
         '''

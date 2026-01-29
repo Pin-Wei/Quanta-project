@@ -1,17 +1,16 @@
 #!/usr/bin/python
 
 import os
-import json
-import argparse
 import itertools
 import numpy as np
 import pandas as pd
 import pingouin as pg
-from scipy.stats import pearsonr, entropy 
+from scipy.stats import pearsonr, entropy, f
 from statsmodels.stats.multitest import fdrcorrection
 
 import seaborn as sns
 import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
 import matplotlib.patches as mpatches
 import plotly.graph_objects as go
 import plotly.express as px
@@ -89,6 +88,61 @@ def plot_corr_with_stats(DF, corr_table, x_lab, y_lab, p_apply, output_path,
         plt.savefig(output_path)
         plt.close()
         print(f"\nCorrelation plot is saved to:\n{output_path}")
+
+def plot_multiple_corr_with_stats(DF, x_lab, y_lab, output_path, 
+                                  z_lab="Type", x_title="Chronological Age", y_title="Corrected PAD", 
+                                  x_lim=(15, 85), y_lim=(-20, 20), x_ticks=np.arange(20, 85, 10), y_ticks=np.arange(-20, 20, 5),
+                                  font_scale=1.5, fig_size=(5, 5), dpi=500, overwrite=False):
+    '''
+    Plot the correlation between x and y for different modality-specific models.
+    '''
+    def _sig_p(p):
+        return f"{'< .001' if p < .001 else ('= ' + str(round(p, 4)).lstrip('0'))} {'*' * sum( p <= t for t in [0.05, 0.01, 0.001] )}"
+    
+    if (not os.path.exists(output_path)) or overwrite:
+        sns.set_theme(style='whitegrid', font_scale=font_scale)
+
+        fig_num = len(DF[z_lab].unique())
+        fig_size = (fig_size[0] * fig_num, fig_size[1])
+        fig = plt.figure(figsize=fig_size, dpi=dpi)
+
+        for idx, z_val in enumerate(DF[z_lab].unique()):
+            dat = DF[DF[z_lab] == z_val]
+            x_vals = dat[x_lab]
+            y_vals = dat[y_lab]
+            n = len(dat)
+            r, p_r = pearsonr(x_vals, y_vals)
+            F = r**2 / (1 - r**2) * (n - 2)
+            p_F = 1 - f.cdf(F, 1, n-2)
+            m, c = np.polyfit(x_vals, y_vals, 1)
+
+            plt.subplot(1, fig_num, idx + 1)
+            g = sns.regplot(
+                data=dat, x=x_lab, y=y_lab, 
+                x_jitter=False, y_jitter=False, 
+                scatter_kws={'s': 100, 'alpha': 0.5, 'edgecolor': 'white'}, line_kws={'linewidth': 1}
+            )
+            g.set(
+                xlim=x_lim, ylim=y_lim, xticks=x_ticks, yticks=y_ticks, 
+                xlabel="", ylabel="", title=z_val
+            )
+            g.axhline(
+                0, color="r", linewidth=1, linestyle="--"
+            )
+            g.text(
+                0.5, 0.9, f"$r$ = {r:.2f}, $p$ {_sig_p(p_r)}, N = {n}", 
+                transform=g.transAxes, ha='center', linespacing=1.5, fontsize=16
+            )
+            g.text(
+                0.5, 0.05, f"y = {c:.2f} + {m:.2f}x\n$F$({1}, {n-2}) = {F:.2f}, $p$ {_sig_p(p_F)}", 
+                transform=g.transAxes, ha='center', linespacing=1.5, fontsize=14
+            )
+
+        fig.tight_layout(rect=[0.02, 0, 1, 1])
+        fig.supxlabel(x_title, fontsize=18)
+        fig.supylabel(y_title, fontsize=18)
+        plt.savefig(output_path)
+        plt.close()
 
 ## histogram plot ---------------------------------------------------------------------
 
@@ -176,7 +230,7 @@ def plot_pad_bars(DF, x_lab, one_or_many, color_dict, output_path,
         kwargs = {"legend": False}
         y_name = ""
     else:
-        kwargs = {"col": z_lab, "col_order": list(DF[z_lab].unique()).sort(key=lambda x: ["STR", "BEH", "FUN", "ALL"].index(x))}
+        kwargs = {"col": z_lab, "col_order": list(DF[z_lab].unique()).sort(key=lambda x: ["STR", "BEH", "FUN", "ST", "ALL"].index(x))}
         y_name = "PAD Value"
 
     if (not os.path.exists(output_path)) or overwrite:
@@ -286,6 +340,216 @@ def plot_bars_with_stats(result_DF, stats_DF, pad_col, version_list, color_dict,
 
     return g
 
+def plot_comparison_bars(result_DF, stats_DF, fig_type, output_path, overwrite=False):
+    '''
+    Bar plots comparing PAD(ac) values between different versions or feature modalities.
+    There are four types of figures available:
+        1. "version_per_pad": Comparison of age-stratified vs. undivided models per PAD type.
+        2. "version_both_pads": Comparison of age-stratified vs. undivided models for both PAD types in one figure.
+        3. "modalities_per_pad": Comparison of modality-specific models per PAD type.
+        4. "modalities_both_pads": Comparison of modality-specific models for both PAD types in one figure.
+    '''
+    def _version_per_pad(result_DF, stats_DF, show_p=False, 
+                         x_col="BarGroup", y_col="value", z_col="Type", hue_col="Version", 
+                         x_order=["Y", "O"], xx_col="Group", palette=sns.color_palette("Set2", 2), 
+                         y_max=12.9, y_tick=1):
+        
+        assert len(result_DF[hue_col].unique()) == 2, "There should be exactly two versions to compare."
+        
+        g = sns.catplot(
+            data=result_DF, x=x_col, y=y_col, col=z_col, kind="bar", errorbar="se", sharex=False, 
+            hue=hue_col, hue_order=x_order, palette=palette, 
+            height=5, aspect=.6, alpha=.8, legend=None
+        )
+
+        for z_val, ax in g.axes_dict.items(): # per modality type
+            for x_val, x_pos in zip(x_order, [0, 1]): # per group
+                stats_res = stats_DF.query(f"{z_col} == '{z_val}' & {xx_col} == '{x_val}'")
+                y_pos = max([stats_res["V1_mean"].max(), stats_res["V2_mean"].max()]) + 1.5
+                p_val = stats_res.iloc[0]["P_value"]
+                p_sig = stats_res.iloc[0]["P_sig"]
+                if show_p:
+                    p_sig = "< .001 ***" if p_val < .001 else f"{p_val:.3f} {p_sig}"
+                
+                if p_val < .05:
+                    ax.plot( [x_pos-.2, x_pos+.2], [y_pos, y_pos], color="k", lw=1.5)
+                    ax.plot( [x_pos-.2, x_pos-.2], [y_pos, y_pos-.3], color="k", lw=1.5)
+                    ax.plot( [x_pos+.2, x_pos+.2], [y_pos, y_pos-.3], color="k", lw=1.5)
+                    ax.text(x_pos, y_pos-.3, p_sig, ha="center", va="bottom", fontsize=20, fontdict={"style": "italic"})
+            
+            ax.yaxis.set_major_locator(ticker.MultipleLocator(y_tick))
+            ax.set_title(z_val, fontsize=20)
+            ax.tick_params(axis="both", which="major", labelsize=18)
+            
+        g.set(ylim=(0, y_max))
+
+        return g
+
+    def _version_both_pads(result_DF, stats_DF, show_p=False, 
+                           x_col="BarGroup", y_col="value", z_col="Type", hue_col="GroupxPAD", 
+                           x_order=["Y_PAD_abs", "Y_PADAC_abs", "O_PAD_abs", "O_PADAC_abs"], xx_col="Group", 
+                           palette=["#E1712B", "#FE9A37", "#2A9689", "#36BBA7"], 
+                           y_max=17.9, y_tick=2):
+        
+        assert len(result_DF[hue_col].unique()) == 4, "There should be exactly four GroupxPAD combinations to compare."
+
+        g = sns.catplot(
+            data=result_DF, x=x_col, y=y_col, col=z_col, kind="bar", errorbar="se", sharex=False, 
+            hue=hue_col, hue_order=x_order, palette=palette,
+            height=5, aspect=.6, alpha=.8, legend=None
+        )
+        hatches = itertools.cycle(['', '//'])
+
+        for z_val, ax in g.axes_dict.items():
+            sub_stats_DF = stats_DF.query(f"{z_col} == '{z_val}'")
+            y_pos = max([sub_stats_DF["V1_mean"].max(), sub_stats_DF["V2_mean"].max()]) + .7
+            
+            for x_val, x_pos in zip([ x.replace("_abs", "") for x in x_order ], np.linspace(-.3, .3, 4)):
+                stats_res = sub_stats_DF.query(f"{hue_col} == '{x_val}'")
+                p_val = stats_res.iloc[0]["P_value"]
+                p_sig = stats_res.iloc[0]["P_sig"]
+                if show_p:
+                    p_sig = "< .001 ***" if p_val < .001 else f"{p_val:.3f} {p_sig}"
+                
+                if p_val < .05:
+                    y_pos += 1 # offset
+                    ax.plot( [x_pos, x_pos+1], [y_pos, y_pos], color="k", lw=1.5)
+                    ax.plot( [x_pos, x_pos], [y_pos, y_pos-.3], color="k", lw=1.5)
+                    ax.plot( [x_pos+1, x_pos+1], [y_pos, y_pos-.3], color="k", lw=1.5)
+                    ax.text((x_pos+.5), y_pos-.5, p_sig, 
+                            ha="center", va="bottom", fontsize=19, fontdict={"style": "italic"})
+                    
+            for i, bar in enumerate(ax.patches):
+                if i % 2 == 0:
+                    hatch = next(hatches)
+                bar.set_hatch(hatch)
+            
+            ax.yaxis.set_major_locator(ticker.MultipleLocator(y_tick))
+            ax.set_title(z_val, fontsize=20)
+            ax.tick_params(axis="both", which="major", labelsize=18)
+            
+        g.set(ylim=(0, y_max))
+
+        return g
+    
+    def _modalities_per_pad(result_DF, stats_DF, show_p=False, 
+                            x_col="Type", y_col="value", z_col="VerxGroup", 
+                            x_order=["STR", "BEH", "FUN", "ALL"], z_col_1="Version", z_col_2="Group", 
+                            palette=[list(sns.color_palette("husl", 5))[0], list(sns.color_palette("husl", 5))[1], list(sns.color_palette("husl", 5))[3], list(sns.color_palette("husl", 5))[4]], 
+                            y_max=15.9, y_tick=1):
+        g = sns.catplot(
+            data=result_DF, x=x_col, y=y_col, col=z_col, kind="bar", errorbar="se", sharex=False, 
+            hue=x_col, hue_order=x_order, palette=palette,
+            height=5, aspect=.6, alpha=.8, legend=None
+        )
+        x_pos_dict = dict(zip(x_order, range(len(x_order)))) # no need to be exactly four types of modalities
+
+        for col_val, ax in g.axes_dict.items():
+            version, group = col_val.split("_")
+            sub_stats_DF = stats_DF.query(f"{z_col_1} == '{version}' & {z_col_2} == '{group}'")
+            y_pos = max([sub_stats_DF["V1_mean"].max(), sub_stats_DF["V2_mean"].max()]) + .5
+
+            for ori_1, ori_2 in itertools.combinations(x_order, 2):
+                stats_res = sub_stats_DF.query(f"V1 == '{ori_1}' & V2 == '{ori_2}'")
+                p_val = stats_res.iloc[0]["P_value"]
+                p_sig = stats_res.iloc[0]["P_sig"]
+                if show_p:
+                    p_sig = "< .001 ***" if p_val < .001 else f"{p_val:.3f} {p_sig}"
+                
+                if p_val < .05:
+                    x_pos_1 = x_pos_dict[ori_1]
+                    x_pos_2 = x_pos_dict[ori_2]
+                    y_pos += 1.1 # offset
+                    ax.plot( [x_pos_1, x_pos_2], [y_pos, y_pos], color="k", lw=1.5)
+                    ax.plot( [x_pos_1, x_pos_1], [y_pos, y_pos-.2], color="k", lw=1.5)
+                    ax.plot( [x_pos_2, x_pos_2], [y_pos, y_pos-.2], color="k", lw=1.5)
+                    ax.text(np.mean([x_pos_1, x_pos_2]), y_pos-.5, p_sig, 
+                            ha="center", va="bottom", fontsize=20, fontdict={"style": "italic"})
+            
+            ax.yaxis.set_major_locator(ticker.MultipleLocator(y_tick))
+            ax.set_title(col_val, fontsize=20)
+            ax.tick_params(axis="both", which="major", labelsize=18)
+            
+        g.set(ylim=(0, y_max))
+
+        return g
+
+    def _modalities_both_pads(result_DF, stats_DF, show_p=False, 
+                              x_col="var", y_col="value", z_col="VerxGroup", hue_col="Type", 
+                              x_order=["STR", "BEH", "FUN", "ALL"], z_col_1="Version", z_col_2="Group",
+                              pad_col="PAD_type", pad_types=["PAD", "PADAC"], 
+                              palette=sns.color_palette("husl", 4), 
+                              y_max=23, y_tick=2):
+        
+        assert len(result_DF[hue_col].unique()) == 4, "There should be exactly four modality types to compare."
+        
+        g = sns.catplot(
+            data=result_DF, x=x_col, y=y_col, col=z_col, kind="bar", errorbar="se", sharex=False, 
+            hue=hue_col, hue_order=x_order, palette=palette, 
+            height=5, aspect=.6, alpha=.8, legend=None
+        )
+        x_pos_dict = {
+            "PAD": dict(zip(x_order, np.linspace(-.3, .3, 4))), 
+            "PADAC": dict(zip(x_order, np.linspace(-.3, .3, 4) + 1))
+        }
+
+        for col_val, ax in g.axes_dict.items():
+            version, group = col_val.split("_")
+
+            for pad_type in pad_types: 
+                sub_stats_DF = stats_DF.query(f"{z_col_1} == '{version}' & {z_col_2} == '{group}' & {pad_col} == '{pad_type}'")
+                y_pos = max([sub_stats_DF["V1_mean"].max(), sub_stats_DF["V2_mean"].max()])
+
+                for ori_1, ori_2 in itertools.combinations(x_order, 2):
+                    stats_res = sub_stats_DF.query(f"V1 == '{ori_1}' & V2 == '{ori_2}'")
+                    p_val = stats_res.iloc[0]["P_value"]
+                    p_sig = stats_res.iloc[0]["P_sig"]
+                    if show_p:
+                        p_sig = "< .001 ***" if p_val < .001 else f"{p_val:.3f} {p_sig}"
+                    
+                    if p_val < .05:
+                        x_pos_1 = x_pos_dict[pad_type][ori_1]
+                        x_pos_2 = x_pos_dict[pad_type][ori_2]
+                        y_pos += 2.5 # offset
+                        ax.plot( [x_pos_1, x_pos_2], [y_pos, y_pos], color="k", lw=1.5)
+                        ax.plot( [x_pos_1, x_pos_1], [y_pos, y_pos-.3], color="k", lw=1.5)
+                        ax.plot( [x_pos_2, x_pos_2], [y_pos, y_pos-.5], color="k", lw=1.5)
+                        ax.text(np.mean([x_pos_1, x_pos_2]), y_pos-.5, p_sig, 
+                                ha="center", va="bottom", fontsize=20, fontdict={"style": "italic"})
+
+            for i, bar in enumerate(ax.patches):
+                if i % 2 == 1:
+                    bar.set_hatch('//')
+            
+            ax.yaxis.set_major_locator(ticker.MultipleLocator(y_tick))
+            ax.set_title(col_val, fontsize=20)
+            ax.tick_params(axis="both", which="major", labelsize=18)
+            
+        g.set(ylim=(0, y_max))
+
+        return g
+    
+    if not os.path.exists(output_path) or overwrite:
+        sns.set_style("whitegrid", {'grid.linestyle': '--'})
+
+        if fig_type == "version_per_pad":
+            g = _version_per_pad(result_DF, stats_DF)
+        elif fig_type == "version_both_pads":
+            g = _version_both_pads(result_DF, stats_DF)
+        elif fig_type == "modalities_per_pad":
+            g = _modalities_per_pad(result_DF, stats_DF)
+        elif fig_type == "modalities_both_pads":
+            g = _modalities_both_pads(result_DF, stats_DF)
+        else:
+            raise ValueError("fig_type must be one of 'version_per_pad', 'version_both_pads', 'modalities_per_pad', or 'modalities_both_pads'.")
+
+        g.set_xlabels("")
+        g.set_ylabels("")
+        g.figure.tight_layout()
+        g.figure.savefig(output_path)
+        print(f"\nFigure saved: {output_path}")
+        plt.close()
+
 def plot_feature_importances(feature_importances, output_path, 
                              x_lim=(-1, 1), fig_size=(6, 20), overwrite=False):
     '''
@@ -305,10 +569,12 @@ def plot_feature_importances(feature_importances, output_path,
 
 ## heatmap ----------------------------------------------------------------------------
 
-def plot_cormat(DF, targ_cols, output_path, fdr=0.05, corrwith_cols=None, 
-                x_col_names=None, y_col_names=None, shorter_xcol_names=False, 
-                xr=0, yr=0, c_bar=False, square=False, 
-                font_scale=1.1, figsize=(3, 3), dpi=200, overwrite=False):
+def plot_cormat(DF, targ_cols, corrwith_cols=None, c_bar=False, square=False, 
+                x_col_names=None, y_col_names=None, 
+                shorter_xcol_names=False, rename_ycols=False, y_title=None,
+                thres_type=["p", "q"][1], sig_mark=["star", "show"][1], fdr=0.05, 
+                font_scale=1.1, annot_fs=None, ticks_fs=None, xr=0, yr=0, 
+                figsize=(3, 3), dpi=200, output_path=None, overwrite=False):
     '''
     Compute correlation matrix and plot it as a heatmap.
     '''
@@ -319,26 +585,88 @@ def plot_cormat(DF, targ_cols, output_path, fdr=0.05, corrwith_cols=None,
         else:
             return pearsonr(x[mask], y[mask])[1]
 
-    def _create_annot_mat(cormat, p_stacked, fdr=fdr):
-        q_vals = fdrcorrection(p_stacked.dropna().values, alpha=fdr)[1]
-        q_stacked = pd.Series(q_vals, index=p_stacked.index)
-        q_mat = q_stacked.unstack()
-        q_sig = q_mat.map(lambda x: "*" * sum( x <= t for t in [0.05, 0.01, 0.001] ))
-        annot_mat = cormat.map(lambda x: f"{x:.2f}") + q_sig.reindex_like(cormat)
-        return annot_mat.fillna("--")
-            
-    def _rename_labels(col_names):
-        renamed_labels = []
-        for x, col in enumerate(col_names):
-            renamed_labels.append(f"({col}) #{x+1}")
-        return renamed_labels
+    def _create_annot_mat(cormat, p_mat, mat_type, thres_type, sig_mark, fdr):
+        if thres_type == "q":
+            if mat_type == "lower_tri":
+                p_stacked = p_mat.where(np.tril(np.ones(p_mat.shape), k=-1).astype(bool)).stack()
+            else: # all entries
+                p_stacked = p_mat.stack()
+            q_vals = fdrcorrection(p_stacked.dropna().values, alpha=fdr)[1]
+            q_stacked = pd.Series(q_vals, index=p_stacked.index)
+            q_mat = q_stacked.unstack()
+            sig = q_mat.map(lambda x: "*" * sum( x <= t for t in [0.05, 0.01, 0.001] ))
+            mask = q_mat < .05
+        else: # thres_type == "p"
+            sig = p_mat.map(lambda x: "*" * sum( x <= t for t in [0.05, 0.01, 0.001] ))
+            mask = p_mat < .05
 
+        if sig_mark == "star": # show significant correlations with stars
+            annot_mat = cormat.map(lambda x: f"{x:.2f}") + sig.reindex_like(cormat)
+        else: # only show significant correlations
+            annot_mat = cormat.map(lambda x: f"{x:.2f}") * mask.reindex_like(cormat)
+        
+        return annot_mat.fillna("--")
+
+    def _rename_ycols(y_title):
+        return {
+            "questionnaire": [
+                "Edinburgh Handedness Inventory, Sum", 
+                "Physical Function", 
+                "Physical Limit", 
+                "Emotional Well", 
+                "Emotional Limit", 
+                "Energy", 
+                "Social Function", 
+                "Pain", 
+                "General Health", 
+                "Physical", 
+                "Mental", 
+                "Sleep Quality", 
+                "Sleep Latency", 
+                "Sleep Duration", 
+                "Sleep Efficiency", 
+                "Sleep Disturbance", 
+                "Sleep Medication", 
+                "Daytime Dysfunction", 
+                "Sum", 
+                "IPAQ, Metabolic Equivalent of Task", 
+                "Extraversion", 
+                "Agreeableness", 
+                "Conscientiousness", 
+                "Emotional Stability", 
+                "Intellect", 
+                "Multidimensional Scale of Perceived Social Support, Sum", 
+                "Cognitive Failure Scale, Sum", 
+                "Anxiety", 
+                "Depression", 
+                "Montreal Cognitive Assessment, Sum" 
+            ], 
+            "standardized test": [
+                "Similarity", 
+                "Vocabulary", 
+                "Information", 
+                "Auditory Immediate", 
+                "Visual Immediate", 
+                "Working Memory", 
+                "Logical Memory 1", 
+                "Facial Memory 1", 
+                "Verbal Pair 1", 
+                "Family Picture 1", 
+                "Letter Number Sequence", 
+                "Spatial Forward", 
+                "Spatial Backward", 
+                "Fine Motor", 
+                "Balance", 
+                "Processing Speed" 
+            ]
+        }[y_title]
+
+    assert output_path is not None, "Output path must be provided."
     if (not os.path.exists(output_path)) or overwrite:
         if corrwith_cols is None:
             cormat = DF[targ_cols].corr()
             p_mat = DF[targ_cols].corr(method=lambda x, y: _corr_p(x, y))
-            p_stacked = p_mat.where(np.tril(np.ones(p_mat.shape), k=-1).astype(bool)).stack()
-            annot_mat = _create_annot_mat(cormat, p_stacked)
+            annot_mat = _create_annot_mat(cormat, p_mat, "lower_tri", thres_type, sig_mark, fdr)
             mask = np.zeros_like(cormat)
             mask[np.triu_indices_from(mask)] = True
         else:
@@ -348,19 +676,33 @@ def plot_cormat(DF, targ_cols, output_path, fdr=0.05, corrwith_cols=None,
                 for t2 in corrwith_cols:
                     targ_df = DF[[t1, t2]].dropna()
                     cormat.loc[t1, t2], p_mat.loc[t1, t2] = pearsonr(targ_df[t1], targ_df[t2])
-            p_stacked = p_mat.stack()
-            annot_mat = _create_annot_mat(cormat, p_stacked)
+            annot_mat = _create_annot_mat(cormat, p_mat, "", thres_type, sig_mark, fdr)
             mask = None
 
-        x_col_names = cormat.columns if x_col_names is None else x_col_names
-        y_col_names = cormat.index if y_col_names is None else y_col_names
+        kwargs = {}
+        if annot_fs is not None:
+            kwargs["annot_kws"] = {"size": annot_fs}
 
         if shorter_xcol_names:
             if x_col_names == y_col_names:
-                x_col_names = [ f"#{x+1}" for x in range(len(x_col_names)) ] # use numeric labels on the x-axis
-                y_col_names = _rename_labels(y_col_names) 
+                kwargs["xticklabels"] = [ f"#{x+1}" for x in range(len(x_col_names)) ] # use numeric labels on the x-axis
+                kwargs["yticklabels"] = [ f"({col}) #{x+1}" for x, col in enumerate(y_col_names) ]
             else:
                 raise ValueError("x_col_names and y_col_names must be the same if shorter_col_names is True.")
+        elif rename_ycols:
+            if y_title is not None:
+                y_col_names = _rename_ycols(y_title)
+                if len(y_col_names) == cormat.shape[0]:
+                    kwargs["yticklabels"] = y_col_names
+                else:
+                    raise ValueError("The length of renamed y_col_names does not match the number of rows in the correlation matrix.")
+            else:
+                raise ValueError("y_title must be provided when rename_ycols is True.")
+        else:
+            if x_col_names is not None:
+                kwargs["xticklabels"] = x_col_names
+            if y_col_names is not None:
+                kwargs["yticklabels"] = y_col_names
 
         sns.set_theme(style='white', font_scale=font_scale)
         plt.figure(figsize=figsize, dpi=dpi)
@@ -368,10 +710,12 @@ def plot_cormat(DF, targ_cols, output_path, fdr=0.05, corrwith_cols=None,
             cormat, mask=mask, square=square, 
             vmin=-1, vmax=1, linewidth=.5, cmap="RdBu_r", cbar=c_bar, 
             cbar_kws=None if c_bar is False else {"shrink": 0.5, "label": "$r$"}, 
-            annot=pd.DataFrame(annot_mat), fmt = "", # annot_kws={"size": 16}, 
-            xticklabels=x_col_names, yticklabels=y_col_names
+            annot=pd.DataFrame(annot_mat), fmt = "", 
+            **kwargs
         )
         g.set(xlabel="", ylabel="")
+        if ticks_fs is not None:
+            g.tick_params(axis="both", which="major", labelsize=ticks_fs)
         g.set_xticklabels(g.get_xticklabels(), rotation=xr)
         g.set_yticklabels(g.get_yticklabels(), rotation=yr)
         plt.tight_layout()

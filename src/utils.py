@@ -54,6 +54,71 @@ def ST_features(): # from standardized tests
         "MOTOR_ST_SCALED_ProcessingSpeed"    
     ]
 
+def platform_features():
+    return [
+        "MOTOR_GOFITTS_BEH_ID1_LeaveTime", 
+        "MOTOR_GOFITTS_BEH_ID2_LeaveTime", 
+        "MOTOR_GOFITTS_BEH_ID3_LeaveTime", 
+        "MOTOR_GOFITTS_BEH_ID4_LeaveTime", 
+        "MOTOR_GOFITTS_BEH_ID5_LeaveTime", 
+        "MOTOR_GOFITTS_BEH_ID6_LeaveTime", 
+        "MOTOR_GOFITTS_BEH_ID1_PointTime", 
+        "MOTOR_GOFITTS_BEH_ID2_PointTime", 
+        "MOTOR_GOFITTS_BEH_ID3_PointTime", 
+        "MOTOR_GOFITTS_BEH_ID4_PointTime", 
+        "MOTOR_GOFITTS_BEH_ID5_PointTime", 
+        "MOTOR_GOFITTS_BEH_ID6_PointTime", 
+        "MOTOR_GOFITTS_BEH_SLOPE_LeaveTime", 
+        "MOTOR_GOFITTS_BEH_SLOPE_PointTime", 
+        "MEMORY_EXCLUSION_BEH_C1_FAMILIARITY", 
+        "MEMORY_EXCLUSION_BEH_C2_FAMILIARITY", 
+        "MEMORY_EXCLUSION_BEH_C3_FAMILIARITY", 
+        "MEMORY_EXCLUSION_BEH_C1_RECOLLECTION", 
+        "MEMORY_EXCLUSION_BEH_C2_RECOLLECTION", 
+        "MEMORY_EXCLUSION_BEH_C3_RECOLLECTION", 
+        "MEMORY_EXCLUSION_BEH_C1TarHit_PROPORTION", 
+        "MEMORY_EXCLUSION_BEH_C1TarMiss_PROPORTION", 
+        "MEMORY_EXCLUSION_BEH_C1NonTarFA_PROPORTION", 
+        "MEMORY_EXCLUSION_BEH_C1NonTarCR_PROPORTION", 
+        "MEMORY_EXCLUSION_BEH_C1NewFA_PROPORTION", 
+        "MEMORY_EXCLUSION_BEH_C1NewCR_PROPORTION", 
+        "MEMORY_EXCLUSION_BEH_C1TarHit_RT",
+		"MEMORY_EXCLUSION_BEH_C1TarMiss_RT",
+        "MEMORY_EXCLUSION_BEH_C1NonTarFA_RT", 
+        "MEMORY_EXCLUSION_BEH_C1NonTarCR_RT", 
+        "MEMORY_EXCLUSION_BEH_C1NewFA_RT", 
+        "MEMORY_EXCLUSION_BEH_C1NewCR_RT", 
+        "MEMORY_EXCLUSION_BEH_C2TarHit_PROPORTION", 
+        "MEMORY_EXCLUSION_BEH_C2TarMiss_PROPORTION", 
+        "MEMORY_EXCLUSION_BEH_C2NonTarFA_PROPORTION", 
+        "MEMORY_EXCLUSION_BEH_C2NonTarCR_PROPORTION", 
+        "MEMORY_EXCLUSION_BEH_C2NewFA_PROPORTION", 
+        "MEMORY_EXCLUSION_BEH_C2NewCR_PROPORTION", 
+        "MEMORY_EXCLUSION_BEH_C2TarHit_RT", 
+        "MEMORY_EXCLUSION_BEH_C2TarMiss_RT", 
+        "MEMORY_EXCLUSION_BEH_C2NonTarFA_RT", 
+        "MEMORY_EXCLUSION_BEH_C2NonTarCR_RT", 
+        "MEMORY_EXCLUSION_BEH_C2NewFA_RT", 
+        "MEMORY_EXCLUSION_BEH_C2NewCR_RT", 
+        "MEMORY_EXCLUSION_BEH_C3TarHit_PROPORTION", 
+        "MEMORY_EXCLUSION_BEH_C3TarMiss_PROPORTION", 
+        "MEMORY_EXCLUSION_BEH_C3NonTarFA_PROPORTION", 
+        "MEMORY_EXCLUSION_BEH_C3NonTarCR_PROPORTION", 
+        "MEMORY_EXCLUSION_BEH_C3NewFA_PROPORTION", 
+        "MEMORY_EXCLUSION_BEH_C3NewCR_PROPORTION", 
+        "MEMORY_EXCLUSION_BEH_C3TarHit_RT", 
+        "MEMORY_EXCLUSION_BEH_C3TarMiss_RT", 
+        "MEMORY_EXCLUSION_BEH_C3NonTarFA_RT", 
+        "MEMORY_EXCLUSION_BEH_C3NonTarCR_RT", 
+        "MEMORY_EXCLUSION_BEH_C3NewFA_RT", 
+        "MEMORY_EXCLUSION_BEH_C3NewCR_RT", 
+        "MEMORY_OSPAN_BEH_LETTER_ACCURACY", 
+        "MEMORY_OSPAN_BEH_MATH_ACCURACY", 
+        "LANGUAGE_SPEECHCOMP_BEH_PASSIVE_ACCURACY", 
+        "LANGUAGE_SPEECHCOMP_BEH_PASSIVE_RT", 
+        "LANGUAGE_READING_BEH_NULL_MeanSR"
+    ]
+
 def domain_approach_mapping_dict():
     return {
         "STRUCTURE": {
@@ -67,6 +132,10 @@ def domain_approach_mapping_dict():
         "FUNCTIONAL": {
             "domains": ["MOTOR", "MEMORY", "LANGUAGE"],
             "approaches": ["EEG", "MRI"]
+        }, 
+        "ST": {
+            "domains": ["MOTOR", "MEMORY", "LANGUAGE"], 
+            "approaches": ["ST_RAW"]
         }, 
         "ALL": {
             "domains": ["STRUCTURE", "MOTOR", "MEMORY", "LANGUAGE"], 

@@ -12,11 +12,11 @@ from statsmodels.stats.multitest import fdrcorrection
 
 import seaborn as sns
 import matplotlib.pyplot as plt
-import matplotlib.ticker as ticker
+
 
 sys.path.append(os.path.join(os.getcwd(), "..", "src"))
 from utils import basic_Q_features, ST_features
-from plotting import plot_real_pred_age
+from plotting import plot_real_pred_age, plot_comparison_bars, plot_cormat
 
 sys.path.append(os.path.join(os.getcwd(), "..", "scripts"))
 from gen_derivatives import Constants, Description, load_model_results, force_agesex_cols
@@ -124,182 +124,6 @@ def compare_modalities(result_DF, feature_orientations, version_list):
                     
     return pd.concat(stats_DF_list, ignore_index=True)
 
-def plot_comparison_bars(result_DF, stats_DF, out_file, fig_type, overwrite=False):
-    def _approach_per_pad():
-        g = sns.catplot(
-            data=result_DF, x="BarGroup", y="value", col="Type", kind="bar", errorbar="se", sharex=False, 
-            hue="Version", hue_order=["Y", "O"], palette=sns.color_palette("Set2", 2), 
-            height=5, aspect=.6, alpha=.8, legend=None
-        )
-
-        for col_val, ax in g.axes_dict.items():
-            for group, x_pos in zip(["Y", "O"], [0, 1]):
-                stats_res = stats_DF.query(f"Type == '{col_val}' & Group == '{group}'")
-                p_val = stats_res.iloc[0]["P_value"]
-                p_sig = stats_res.iloc[0]["P_sig"]
-                # p_sig = "< .001 ***" if p_val < .001 else f"{p_val:.3f} {p_sig}"
-                y_pos = max([stats_res["V1_mean"].max(), stats_res["V2_mean"].max()]) + 1.5
-                
-                if p_val < .05:
-                    ax.plot( [x_pos-.2, x_pos+.2], [y_pos, y_pos], color="k", lw=1.5)
-                    ax.plot( [x_pos-.2, x_pos-.2], [y_pos, y_pos-.3], color="k", lw=1.5)
-                    ax.plot( [x_pos+.2, x_pos+.2], [y_pos, y_pos-.3], color="k", lw=1.5)
-                    ax.text(x_pos, y_pos-.3, p_sig, 
-                            ha="center", va="bottom", fontsize=20, fontdict={"style": "italic"})
-            
-            ax.yaxis.set_major_locator(ticker.MultipleLocator(1))
-            ax.set_title(col_val, fontsize=20)
-            ax.tick_params(axis="both", which="major", labelsize=18)
-            
-        g.set(ylim=(0, 12.9))
-        g.set_xlabels("")
-        g.set_ylabels("")
-        g.figure.tight_layout()
-        g.figure.savefig(out_file)
-        print(f"\nFigure saved: {out_file}")
-        plt.close()
-
-    def _version_both_pads():
-        g = sns.catplot(
-            data=result_DF, x="BarGroup", y="value", col="Type", kind="bar", errorbar="se", sharex=False, 
-            hue="GroupxPAD", hue_order=["Y_PAD_abs", "Y_PADAC_abs", "O_PAD_abs", "O_PADAC_abs"], 
-            palette=["#E1712B", "#FE9A37", "#2A9689", "#36BBA7"], 
-            height=5, aspect=.6, alpha=.8, legend=None
-        )
-        hatches = itertools.cycle(['', '//'])
-
-        for col_val, ax in g.axes_dict.items():
-            sub_stats_DF = stats_DF.query(f"Type == '{col_val}'")
-            y_pos = max([sub_stats_DF["V1_mean"].max(), sub_stats_DF["V2_mean"].max()]) + .7
-            
-            for group, x_pos in zip(["Y_PAD", "Y_PADAC", "O_PAD", "O_PADAC"], np.linspace(-.3, .3, 4)):
-                stats_res = sub_stats_DF.query(f"GroupxPAD == '{group}'")
-                p_val = stats_res.iloc[0]["P_value"]
-                p_sig = stats_res.iloc[0]["P_sig"]
-                
-                if p_val < .05:
-                    y_pos += 1 # offset
-                    ax.plot( [x_pos, x_pos+1], [y_pos, y_pos], color="k", lw=1.5)
-                    ax.plot( [x_pos, x_pos], [y_pos, y_pos-.3], color="k", lw=1.5)
-                    ax.plot( [x_pos+1, x_pos+1], [y_pos, y_pos-.3], color="k", lw=1.5)
-                    ax.text((x_pos+.5), y_pos-.5, p_sig, 
-                            ha="center", va="bottom", fontsize=19, fontdict={"style": "italic"})
-                    
-            for i, bar in enumerate(ax.patches):
-                if i % 2 == 0:
-                    hatch = next(hatches)
-                bar.set_hatch(hatch)
-            
-            ax.yaxis.set_major_locator(ticker.MultipleLocator(2))
-            ax.set_title(col_val, fontsize=20)
-            ax.tick_params(axis="both", which="major", labelsize=18)
-            
-        g.set(ylim=(0, 17.9))
-        g.set_xlabels("")
-        g.set_ylabels("")
-        g.figure.tight_layout()
-        g.figure.savefig(out_file)
-        print(f"\nFigure saved: {out_file}")
-        plt.close()
-    
-    def _modalities_per_pad():
-        g = sns.catplot(
-            data=result_DF, x="Type", y="value", col="VerxGroup", kind="bar", errorbar="se", sharex=False, 
-            hue="Type", hue_order=["STR", "BEH", "FUN", "ALL"], # palette=sns.color_palette("husl", 4), 
-            palette=[list(sns.color_palette("husl", 5))[0], list(sns.color_palette("husl", 5))[1], list(sns.color_palette("husl", 5))[3], list(sns.color_palette("husl", 5))[4]], 
-            height=5, aspect=.6, alpha=.8, legend=None
-        )
-        x_pos_dict = dict(zip(["STR", "BEH", "FUN", "ALL"], range(4)))
-
-        for col_val, ax in g.axes_dict.items():
-            version, group = col_val.split("_")
-            sub_stats_DF = stats_DF.query(f"Version == '{version}' & Group == '{group}' & PAD_type == '{pad_type}'")
-            y_pos = max([sub_stats_DF["V1_mean"].max(), sub_stats_DF["V2_mean"].max()]) + .5
-
-            for ori_1, ori_2 in itertools.combinations(["STR", "BEH", "FUN", "ALL"], 2):
-                stats_res = sub_stats_DF.query(f"V1 == '{ori_1}' & V2 == '{ori_2}'")
-                p_val = stats_res.iloc[0]["P_value"]
-                p_sig = stats_res.iloc[0]["P_sig"]
-                    
-                if p_val < .05:
-                    x_pos_1 = x_pos_dict[ori_1]
-                    x_pos_2 = x_pos_dict[ori_2]
-                    y_pos += 1.1 # offset
-                    ax.plot( [x_pos_1, x_pos_2], [y_pos, y_pos], color="k", lw=1.5)
-                    ax.plot( [x_pos_1, x_pos_1], [y_pos, y_pos-.2], color="k", lw=1.5)
-                    ax.plot( [x_pos_2, x_pos_2], [y_pos, y_pos-.2], color="k", lw=1.5)
-                    ax.text(np.mean([x_pos_1, x_pos_2]), y_pos-.5, p_sig, 
-                            ha="center", va="bottom", fontsize=20, fontdict={"style": "italic"})
-            
-            ax.yaxis.set_major_locator(ticker.MultipleLocator(1))
-            ax.set_title(col_val, fontsize=20)
-            ax.tick_params(axis="both", which="major", labelsize=18)
-            
-        g.set(ylim=(0, 15.9))
-        g.set_xlabels("")
-        g.set_ylabels("")
-        g.figure.tight_layout()
-        g.figure.savefig(out_file)
-        print(f"\nFigure saved: {out_file}")
-        plt.close()
-
-    def _modalities_both_pads():
-        g = sns.catplot(
-            data=result_DF, x="var", y="value", col="VerxGroup", kind="bar", errorbar="se", sharex=False, 
-            hue="Type", hue_order=["STR", "BEH", "FUN", "ALL"], palette=sns.color_palette("husl", 4), 
-            height=5, aspect=.6, alpha=.8, legend=None
-        )
-        x_pos_dict = {
-            "PAD": dict(zip(["STR", "BEH", "FUN", "ALL"], np.linspace(-.3, .3, 4))), 
-            "PADAC": dict(zip(["STR", "BEH", "FUN", "ALL"], np.linspace(-.3, .3, 4) + 1))
-        }
-
-        for col_val, ax in g.axes_dict.items():
-            version, group = col_val.split("_")
-
-            for pad_type in ["PAD", "PADAC"]: 
-                sub_stats_DF = stats_DF.query(f"Version == '{version}' & Group == '{group}' & PAD_type == '{pad_type}'")
-                y_pos = max([sub_stats_DF["V1_mean"].max(), sub_stats_DF["V2_mean"].max()])
-
-                for ori_1, ori_2 in itertools.combinations(["STR", "BEH", "FUN", "ALL"], 2):
-                    stats_res = sub_stats_DF.query(f"V1 == '{ori_1}' & V2 == '{ori_2}'")
-                    p_val = stats_res.iloc[0]["P_value"]
-                    p_sig = stats_res.iloc[0]["P_sig"]
-                    
-                    if p_val < .05:
-                        x_pos_1 = x_pos_dict[pad_type][ori_1]
-                        x_pos_2 = x_pos_dict[pad_type][ori_2]
-                        y_pos += 2.5 # offset
-                        ax.plot( [x_pos_1, x_pos_2], [y_pos, y_pos], color="k", lw=1.5)
-                        ax.plot( [x_pos_1, x_pos_1], [y_pos, y_pos-.3], color="k", lw=1.5)
-                        ax.plot( [x_pos_2, x_pos_2], [y_pos, y_pos-.5], color="k", lw=1.5)
-                        ax.text(np.mean([x_pos_1, x_pos_2]), y_pos-.5, p_sig, 
-                                ha="center", va="bottom", fontsize=20, fontdict={"style": "italic"})
-
-            for i, bar in enumerate(ax.patches):
-                if i % 2 == 1:
-                    bar.set_hatch('//')
-            
-            ax.yaxis.set_major_locator(ticker.MultipleLocator(2))
-            ax.set_title(col_val, fontsize=20)
-            ax.tick_params(axis="both", which="major", labelsize=18)
-            
-        g.set(ylim=(0, 23))
-        g.figure.tight_layout()
-        g.set_xlabels("")
-        g.set_ylabels("")
-
-    if not os.path.exists(out_file) or overwrite:
-        sns.set_style("whitegrid", {'grid.linestyle': '--'})
-        if fig_type == "_version_both_pads":
-            _approach_per_pad()
-        elif fig_type == "version_both_pads":
-            _version_both_pads()
-        elif fig_type == "modalities_per_pad":
-            _modalities_per_pad()
-        elif fig_type == "modalities_both_pads":
-            _modalities_both_pads()
-
 def make_df_for_cormat(result_DF, data_DF):
     DF_Y = result_DF.query("Version == 'ByAge' & AgeGroup == 'Y'")
     DF_O = result_DF.query("Version == 'ByAge' & AgeGroup == 'O'")
@@ -319,117 +143,6 @@ def make_df_for_cormat(result_DF, data_DF):
             wide_df_dict[pad_type][group_name] = sub_df.merge(data_DF_interested, on="SID", how="left")
 
     return wide_df_dict
-
-def plot_corr_mat(DF, targ_cols, out_file, overwrite=False):
-    if not os.path.exists(out_file) or overwrite:
-        targ_df = DF.loc[:, targ_cols]
-        cormat = targ_df.corr()
-        mask = np.zeros_like(cormat)
-        mask[np.triu_indices_from(mask)] = True
-        
-        sns.set_theme(style='white', font_scale=1.2)
-        plt.figure(figsize=(4, 3), dpi=200)
-        g = sns.heatmap(
-            cormat, mask=mask, # square=True, 
-            vmin=-1, vmax=1, linewidth=.5, cmap="RdBu_r", cbar=False, 
-            annot=True, fmt = ".2f", annot_kws={"size": 16}, 
-        )
-        plt.tight_layout()
-        plt.savefig(out_file)
-        print(f"\nFigure saved: {out_file}")
-        plt.close()
-
-def plot_corwith_mat(DF, x_cols, y_cols, y_title, out_file, fig_size, overwrite=False):
-    def _def_feature_names(y_title):
-        return {
-            "questionnaire": [
-                "Edinburgh Handedness Inventory, Sum", 
-                "Physical Function", 
-                "Physical Limit", 
-                "Emotional Well", 
-                "Emotional Limit", 
-                "Energy", 
-                "Social Function", 
-                "Pain", 
-                "General Health", 
-                "Physical", 
-                "Mental", 
-                "Sleep Quality", 
-                "Sleep Latency", 
-                "Sleep Duration", 
-                "Sleep Efficiency", 
-                "Sleep Disturbance", 
-                "Sleep Medication", 
-                "Daytime Dysfunction", 
-                "Sum", 
-                "IPAQ, Metabolic Equivalent of Task", 
-                "Extraversion", 
-                "Agreeableness", 
-                "Conscientiousness", 
-                "Emotional Stability", 
-                "Intellect", 
-                "Multidimensional Scale of Perceived Social Support, Sum", 
-                "Cognitive Failure Scale, Sum", 
-                "Anxiety", 
-                "Depression", 
-                "Montreal Cognitive Assessment, Sum" 
-            ], 
-            "standardized test": [
-                "Similarity", 
-                "Vocabulary", 
-                "Information", 
-                "Auditory Immediate", 
-                "Visual Immediate", 
-                "Working Memory", 
-                "Logical Memory 1", 
-                "Facial Memory 1", 
-                "Verbal Pair 1", 
-                "Family Picture 1", 
-                "Letter Number Sequence", 
-                "Spatial Forward", 
-                "Spatial Backward", 
-                "Fine Motor", 
-                "Balance", 
-                "Processing Speed" 
-            ]
-        }[y_title]
-
-    def _create_annot_mat(cormat, p_stacked, fdr=0.05):
-        q_vals = fdrcorrection(p_stacked.dropna().values, alpha=fdr)[1]
-        q_stacked = pd.Series(q_vals, index=p_stacked.index)
-        q_mat = q_stacked.unstack()
-        # q_sig = q_mat.map(lambda x: "*" * sum( x <= t for t in [0.05, 0.01, 0.001] ))
-        # annot_mat = cormat.map(lambda x: f"{x:.2f}") + q_sig.reindex_like(cormat)
-        q_mask = q_mat < .05
-        annot_mat = cormat.map(lambda x: f"{x:.2f}") * q_mask.reindex_like(cormat)
-        return annot_mat.fillna("--")
-    
-    if not os.path.exists(out_file) or overwrite:
-        cormat = pd.DataFrame(index=y_cols, columns=x_cols, dtype=float)
-        p_mat = pd.DataFrame(index=y_cols, columns=x_cols, dtype=str)
-        for t1 in y_cols:
-            for t2 in x_cols:
-                targ_df = DF[[t1, t2]].dropna()
-                cormat.loc[t1, t2], p_mat.loc[t1, t2] = pearsonr(targ_df[t1], targ_df[t2])
-        p_stacked = p_mat.stack()
-        annot_mat = _create_annot_mat(cormat, p_stacked)
-        mask = None
-        
-        sns.set_theme(style='white', font_scale=1.1)
-        plt.figure(figsize=fig_size, dpi=200)
-        g = sns.heatmap(
-            cormat, mask=mask, square=False, 
-            vmin=-1, vmax=1, linewidth=.5, cmap="RdBu_r", cbar=False, 
-            # cbar=True, cbar_kws={"shrink": 0.5, "label": "$r$"}, 
-            annot=pd.DataFrame(annot_mat), fmt = "", annot_kws={"size": 18}, 
-            xticklabels=x_cols, yticklabels=_def_feature_names(y_title)
-        )
-        g.set(xlabel="", ylabel="")
-        g.tick_params(axis="both", which="major", labelsize=20)
-        plt.tight_layout()
-        plt.savefig(out_file)
-        print(f"\nFigure saved: {out_file}")
-        plt.close()
 
 if __name__ == "__main__":
     const = Constants()
@@ -471,9 +184,11 @@ if __name__ == "__main__":
             melted_result_DF = (
                 result_DF
                 .loc[:, ["Version", "Type", "BarGroup", "SID", "PAD_abs", "PADAC_abs"]]
-                .melt(id_vars=["Version", "Type", "BarGroup", "SID"], 
+                .melt(
+                    id_vars=["Version", "Type", "BarGroup", "SID"], 
                     value_vars=["PAD_abs", "PADAC_abs"], 
-                    var_name="PAD_type")
+                    var_name="PAD_type"
+                )
             )
 
             ## Scatter plots:
@@ -536,10 +251,12 @@ if __name__ == "__main__":
                 for group_name in ["Y", "O", "Y&O"]:
 
                     ## Among PAC(AC) values:
-                    plot_corr_mat(
+                    plot_cormat(
                         DF=wide_df_dict[pad_type][group_name], 
-                        targ_cols=sorted(desc.feature_oris), 
-                        out_file=os.path.join(out_path, f"cormat_{pad_type}_{group_name}.png"), 
+                        targ_cols=sorted(desc.feature_oris),  
+                        annot_fs=16, 
+                        figsize=(4, 3), 
+                        output_path=os.path.join(out_path, f"cormat_{pad_type}_{group_name}.png"), 
                         overwrite=args.overwrite
                     )
 
@@ -549,12 +266,15 @@ if __name__ == "__main__":
                             [basic_q_features, st_features], 
                             [(12, 11), (8, 7)]
                         ):
-                        plot_corwith_mat(
+                        plot_cormat(
                             DF=wide_df_dict[pad_type][group_name], 
-                            x_cols=sorted(desc.feature_oris), 
-                            y_cols=y_cols, 
+                            targ_cols=sorted(desc.feature_oris), 
+                            corrwith_cols=y_cols, 
+                            rename_ycols=True, 
                             y_title=y_title, 
-                            out_file=os.path.join(out_path, f"cormat_{pad_type}_{y_title}_{group_name}.png"), 
+                            annot_fs=18, 
+                            ticks_fs=20, 
                             fig_size=fig_size, 
+                            output_path=os.path.join(out_path, f"cormat_{pad_type}_{y_title}_{group_name}.png"), 
                             overwrite=args.overwrite
                         )
